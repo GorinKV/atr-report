@@ -22,6 +22,7 @@ class CandleRow(BaseModel):
     low: float
     close: float
     range: float
+    volume: int
     atr: Optional[float]
     ratio: Optional[float]
     dir: str  # "up" | "down" | "flat" — направление тела свечи
@@ -40,11 +41,13 @@ class ATRSummary(BaseModel):
     down_spikes: int = 0  # все всплески (R/ATR > 2) вниз
     super_up_spikes: int = 0    # супервсплески (R/ATR > 4) вверх
     super_down_spikes: int = 0  # супервсплески (R/ATR > 4) вниз
+    total_volume: int = 0  # суммарный объём за день
 
 
 class ATRResponse(BaseModel):
     ticker: str
     report_date: str
     atr_period: int
+    generated_at: str  # момент построения отчёта (время сервера, ISO)
     rows: List[CandleRow]
     summary: ATRSummary

@@ -74,6 +74,7 @@ def build_report(df, atr, report_date):
               "супервсплеск": 0, "n/a": 0}
     up_spikes = down_spikes = 0        # все всплески (R/ATR > 2)
     super_up = super_down = 0          # супервсплески (R/ATR > 4)
+    total_volume = 0
     for ts, row in day_df.iterrows():
         candle_range = float(row["high"] - row["low"])
         a = atr.loc[ts]
@@ -92,11 +93,13 @@ def build_report(df, atr, report_date):
                 super_up += 1
             elif direction == "down":
                 super_down += 1
+        total_volume += int(row["volume"])
         counts[verdict] = counts.get(verdict, 0) + 1
         if ratio is not None: ratios.append(ratio)
         rows.append(CandleRow(time=ts.strftime("%H:%M"), datetime=ts.isoformat(),
             open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
             close=float(row["close"]), range=round(candle_range, 6),
+            volume=int(row["volume"]),
             atr=None if a_val is None else round(a_val, 6),
             ratio=None if ratio is None else round(ratio, 4), dir=direction,
             mark=mark, verdict=verdict))
@@ -105,14 +108,18 @@ def build_report(df, atr, report_date):
         summary = ATRSummary(total_candles=len(day_df), avg_ratio=round(float(arr.mean()), 4),
             median_ratio=round(float(np.median(arr)), 4), min_ratio=round(float(arr.min()), 4),
             max_ratio=round(float(arr.max()), 4), distribution=counts,
+            total_volume=total_volume,
             up_spikes=up_spikes, down_spikes=down_spikes,
             super_up_spikes=super_up, super_down_spikes=super_down)
     else:
         summary = ATRSummary(total_candles=len(day_df), avg_ratio=None, median_ratio=None,
             min_ratio=None, max_ratio=None, distribution=counts,
+            total_volume=total_volume,
             up_spikes=up_spikes, down_spikes=down_spikes,
             super_up_spikes=super_up, super_down_spikes=super_down)
-    return ATRResponse(ticker="", report_date=str(report_date), atr_period=0, rows=rows, summary=summary)
+    return ATRResponse(ticker="", report_date=str(report_date), atr_period=0,
+        generated_at=datetime.now().isoformat(timespec="seconds"),
+        rows=rows, summary=summary)
 
 
 async def _run_report(req: ATRRequest) -> ATRResponse:

@@ -89,6 +89,7 @@
   <div id="status" class="status"></div>
   <div id="summary" class="summary"></div>
   <div id="table-wrap"></div>
+  <p id="data-note" style="display:none;color:var(--muted);font-size:12px;margin:10px 0 0"></p>
   <div id="dist-wrap"></div>
 </main>
 <script>
@@ -97,6 +98,7 @@ const statusEl=$('status'),summaryEl=$('summary'),tableWrap=$('table-wrap'),dist
 function setStatus(m,k){if(!m){statusEl.className='status';statusEl.textContent='';return}
   statusEl.className='status '+(k||'info');statusEl.textContent=m}
 function fmt(n,d=4){return n===null||n===undefined?'—':Number(n).toFixed(d)}
+function fmtInt(n){return n===null||n===undefined?'—':Number(n).toLocaleString('ru-RU')}
 function verdictClass(v){return 'v-'+v.replace(/\s+/g,'-').replace(/\.$/,'')}
 async function load(){
   const btn=$('load');btn.disabled=true;setStatus('Загрузка с MOEX ISS…','info');
@@ -110,7 +112,8 @@ async function load(){
   try{
     const r=await fetch('/api/atr/report?'+p);
     if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}
-      setStatus('Ошибка: '+m,'error');summaryEl.innerHTML='';tableWrap.innerHTML='';distWrap.innerHTML='';return}
+      setStatus('Ошибка: '+m,'error');summaryEl.innerHTML='';tableWrap.innerHTML='';distWrap.innerHTML='';
+      $('data-note').style.display='none';return}
     render(await r.json());setStatus(null);
   }catch(e){setStatus('Сеть/сервер: '+e.message,'error')}
   finally{btn.disabled=false}
@@ -128,10 +131,11 @@ function render(data){
     <div class="card"><div class="k">Всплески</div>
       <div class="v"><span class="arr-up">▲ ${s.up_spikes??0}</span> / <span class="arr-down">▼ ${s.down_spikes??0}</span></div></div>
     <div class="card"><div class="k">Супервсплески</div>
-      <div class="v">💥 <span class="arr-up">▲ ${s.super_up_spikes??0}</span> / <span class="arr-down">▼ ${s.super_down_spikes??0}</span></div></div>`;
-  if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';return}
+      <div class="v">💥 <span class="arr-up">▲ ${s.super_up_spikes??0}</span> / <span class="arr-down">▼ ${s.super_down_spikes??0}</span></div></div>
+    <div class="card"><div class="k">Объём дня</div><div class="v">${fmtInt(s.total_volume)}</div></div>`;
+  if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';$('data-note').style.display='none';return}
   let h=`<table><thead><tr><th>Время</th><th>Open</th><th>High</th><th>Low</th><th>Close</th>
-    <th>Range</th><th>ATR</th><th>R/ATR</th><th>Вердикт</th></tr></thead><tbody>`;
+    <th>Объём</th><th>Range</th><th>ATR</th><th>R/ATR</th><th>Вердикт</th></tr></thead><tbody>`;
   for(const row of data.rows){
     const spike = row.ratio!==null && row.ratio>2;
     const isSuper = row.ratio!==null && row.ratio>4;
@@ -140,9 +144,15 @@ function render(data){
     const arrow = spike ? (row.dir==='up'?'<span class="arr-up">▲</span>'
                               : row.dir==='down'?'<span class="arr-down">▼</span>':'') : '';
     h+=`<tr class="${cls}"><td>${row.time}</td><td>${fmt(row.open)}</td><td>${fmt(row.high)}</td><td>${fmt(row.low)}</td>
-    <td>${fmt(row.close)}</td><td>${fmt(row.range)}</td><td>${fmt(row.atr)}</td><td>${fmt(row.ratio,2)}</td>
+    <td>${fmt(row.close)}</td><td>${fmtInt(row.volume)}</td><td>${fmt(row.range)}</td><td>${fmt(row.atr)}</td><td>${fmt(row.ratio,2)}</td>
     <td class="verdict ${verdictClass(row.verdict)}">${row.mark} ${row.verdict} ${arrow}</td></tr>`}
   h+='</tbody></table>';tableWrap.innerHTML=h;
+  const lastCandle=data.rows[data.rows.length-1];
+  const localTime=new Date().toLocaleTimeString('ru-RU');
+  const noteEl=$('data-note');
+  noteEl.style.display='block';
+  noteEl.innerHTML=`Время свечей — биржевое, <b>МСК (UTC+3)</b>. Последняя свеча: <b>${lastCandle.time} МСК</b> ·
+    отчёт построен: <b>${data.generated_at.slice(11,19)}</b> (время сервера) · ваше время: <b>${localTime}</b>`;
   const total=Object.entries(s.distribution).filter(([k])=>k!=='n/a').reduce((a,[,v])=>a+v,0);
   const order=['затишье','спокойно','норма','повыш. волат.','выброс','супервсплеск'];
   let d='<div class="dist"><h3>Распределение по волатильности</h3>';
