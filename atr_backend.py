@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-from atr_schemas import ATRRequest, ATRResponse, CandleRow, ATRSummary, SpikeItem
+from atr_schemas import (ATRRequest, ATRResponse, CandleRow, ATRSummary, DayStat,
+                         SpikeItem, SpikesResponse)
 
 router = APIRouter(prefix="/api/atr", tags=["atr"])
 MOEX_BASE = "https://iss.moex.com/iss"
@@ -126,10 +127,18 @@ def build_report(df, atr, report_date):
         rows=rows, summary=summary)
 
 
-def build_history_spikes(df, atr, limit=SPIKES_LIMIT):
+def build_spike_analytics(df, atr, limit=SPIKES_LIMIT):
     """Всплески (R/ATR > 2) и супервсплески (> 4) за всё окно истории,
-    по которому считался ATR. Отсортированы по силе, самые сильные сверху."""
-    spikes = []
+    по которому считался ATR, плюс сводные статистики.
+
+    Возвращает (spikes, by_day, by_hour, by_hour_super):
+    - spikes: топ-limit по силе;
+    - by_day: сводка по дням (кол-во, суперы, направления, максимум);
+    - by_hour: распределение по часам суток (МСК), все всплески;
+    - by_hour_super: то же, только супервсплески.
+    Сводные статистики считаются по ПОЛНОМУ списку, без лимита.
+    """
+    spikes, by_hour, by_hour_super = [], {}, {}
     for ts, row in df.iterrows():
         a = atr.loc[ts]
         if pd.isna(a) or not a:
@@ -140,13 +149,30 @@ def build_history_spikes(df, atr, limit=SPIKES_LIMIT):
             continue
         direction = ("up" if row["close"] > row["open"]
                      else "down" if row["close"] < row["open"] else "flat")
+        is_super = ratio > 4.0
         spikes.append(SpikeItem(
             date=ts.date().isoformat(), time=ts.strftime("%H:%M"),
-            kind="супервсплеск" if ratio > 4.0 else "выброс",
+            kind="супервсплеск" if is_super else "выброс",
             ratio=round(ratio, 2), dir=direction,
             close=float(row["close"]), volume=int(row["volume"])))
+        hour = ts.strftime("%H")
+        by_hour[hour] = by_hour.get(hour, 0) + 1
+        if is_super:
+            by_hour_super[hour] = by_hour_super.get(hour, 0) + 1
     spikes.sort(key=lambda s: -s.ratio)
-    return spikes[:limit]
+
+    # Сводка по дням — по полному списку, до среза limit
+    days: dict[str, dict] = {}
+    for s in spikes:
+        d = days.setdefault(s.date, {"count": 0, "super_count": 0, "up": 0, "down": 0, "max_ratio": 0.0})
+        d["count"] += 1
+        d["super_count"] += s.kind == "супервсплеск"
+        d["up"] += s.dir == "up"
+        d["down"] += s.dir == "down"
+        d["max_ratio"] = max(d["max_ratio"], s.ratio)
+    by_day = [DayStat(date=day, **stat) for day, stat in sorted(days.items())]
+
+    return spikes[:limit], by_day, dict(sorted(by_hour.items())), dict(sorted(by_hour_super.items()))
 
 
 async def _run_report(req: ATRRequest) -> ATRResponse:
@@ -165,8 +191,39 @@ async def _run_report(req: ATRRequest) -> ATRResponse:
     resp.ticker = req.ticker.upper()
     resp.atr_period = req.atr_period
     resp.interval = req.interval
-    resp.spikes = build_history_spikes(df, atr)
+    resp.spikes, resp.by_day, resp.by_hour, resp.by_hour_super = build_spike_analytics(df, atr)
     return resp
+
+
+@router.get("/spikes", response_model=SpikesResponse)
+async def spikes_get(
+    ticker: str = Query("SBER"),
+    engine: str = Query("stock"),
+    market: str = Query("shares"),
+    board: str = Query("TQBR"),
+    interval: int = Query(10, ge=1, le=60),
+    atr_period: int = Query(14, ge=2, le=100),
+    days_back: int = Query(10, ge=1, le=90),
+    min_ratio: float = Query(2.0, ge=1.0, le=20.0,
+        description="Порог силы в ответе; сводки by_day/by_hour всегда по базе R/ATR > 2"),
+) -> SpikesResponse:
+    """Аналитика всплесков за окно истории без полного дневного отчёта.
+    Удобно для скриптов: только список всплесков и сводные статистики."""
+    async with httpx.AsyncClient() as client:
+        raw = await fetch_moex_candles(client, ticker.upper(), engine,
+            market, board, interval, days_back)
+    df = prepare_ohlc(raw)
+    if df.empty: raise HTTPException(404, "MOEX ISS не вернул свечей.")
+    if len(df) < atr_period + 1:
+        raise HTTPException(422, f"Мало данных: {len(df)} свечей, нужно ≥ {atr_period + 1}.")
+    atr = calculate_atr(df, atr_period)
+    all_spikes, by_day, by_hour, by_hour_super = build_spike_analytics(df, atr, limit=SPIKES_LIMIT)
+    return SpikesResponse(
+        ticker=ticker.upper(), atr_period=atr_period, interval=interval,
+        generated_at=datetime.now(timezone(timedelta(hours=3))).isoformat(timespec="seconds"),
+        total=len(all_spikes),
+        spikes=[s for s in all_spikes if s.ratio >= min_ratio],
+        by_day=by_day, by_hour=by_hour, by_hour_super=by_hour_super)
 
 
 @router.post("/report", response_model=ATRResponse)

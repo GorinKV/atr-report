@@ -2,7 +2,6 @@ from pydantic import BaseModel, Field
 from datetime import date
 from typing import Optional, List, Dict
 
-
 class ATRRequest(BaseModel):
     ticker: str = Field(default="SBER")
     engine: str = Field(default="stock")
@@ -54,6 +53,27 @@ class SpikeItem(BaseModel):
     volume: int
 
 
+class DayStat(BaseModel):
+    date: str
+    count: int          # всего всплесков (R/ATR > 2)
+    super_count: int    # из них супервсплесков (> 4)
+    up: int
+    down: int
+    max_ratio: float
+
+
+class SpikesResponse(BaseModel):
+    ticker: str
+    atr_period: int
+    interval: int
+    generated_at: str
+    total: int          # всплесков в окне (до лимита топ-N)
+    spikes: List[SpikeItem]      # отсортированы по силе, топ-N
+    by_day: List[DayStat]        # сводка по дням
+    by_hour: Dict[str, int]      # распределение по часам суток (МСК)
+    by_hour_super: Dict[str, int]  # из них супервсплески
+
+
 class ATRResponse(BaseModel):
     ticker: str
     report_date: str
@@ -63,3 +83,6 @@ class ATRResponse(BaseModel):
     rows: List[CandleRow]
     summary: ATRSummary
     spikes: List[SpikeItem] = Field(default_factory=list)  # всплески за всё окно истории
+    by_day: List[DayStat] = Field(default_factory=list)
+    by_hour: Dict[str, int] = Field(default_factory=dict)
+    by_hour_super: Dict[str, int] = Field(default_factory=dict)
