@@ -45,7 +45,18 @@
   .v-норма{color:var(--yellow)}
   .v-повыш-волат{color:var(--orange)}
   .v-выброс{color:var(--red)}
+  .v-супервсплеск{color:#ff4d4d;font-weight:700}
   .v-na{color:var(--muted)}
+  .arr-up{color:var(--green);font-weight:600}
+  .arr-down{color:var(--red);font-weight:600}
+  tr.spike-up{background:rgba(63,191,127,.10)}
+  tr.spike-up:hover{background:rgba(63,191,127,.18)}
+  tr.spike-down{background:rgba(224,91,91,.10)}
+  tr.spike-down:hover{background:rgba(224,91,91,.18)}
+  tr.super-up{background:rgba(63,191,127,.24);font-weight:600}
+  tr.super-up:hover{background:rgba(63,191,127,.34)}
+  tr.super-down{background:rgba(224,91,91,.24);font-weight:600}
+  tr.super-down:hover{background:rgba(224,91,91,.34)}
   .bar{display:inline-block;height:8px;background:var(--accent);border-radius:2px;vertical-align:middle;margin-left:8px;min-width:1px}
   .dist{margin-top:20px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
   .dist h3{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
@@ -113,20 +124,34 @@ function render(data){
     <div class="card"><div class="k">Свечей</div><div class="v">${s.total_candles}</div></div>
     <div class="card"><div class="k">Средний R/ATR</div><div class="v">${fmt(s.avg_ratio,2)}</div></div>
     <div class="card"><div class="k">Медиана</div><div class="v">${fmt(s.median_ratio,2)}</div></div>
-    <div class="card"><div class="k">Мин / Макс</div><div class="v">${fmt(s.min_ratio,2)} / ${fmt(s.max_ratio,2)}</div></div>`;
+    <div class="card"><div class="k">Мин / Макс</div><div class="v">${fmt(s.min_ratio,2)} / ${fmt(s.max_ratio,2)}</div></div>
+    <div class="card"><div class="k">Всплески</div>
+      <div class="v"><span class="arr-up">▲ ${s.up_spikes??0}</span> / <span class="arr-down">▼ ${s.down_spikes??0}</span></div></div>
+    <div class="card"><div class="k">Супервсплески</div>
+      <div class="v">💥 <span class="arr-up">▲ ${s.super_up_spikes??0}</span> / <span class="arr-down">▼ ${s.super_down_spikes??0}</span></div></div>`;
   if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';return}
   let h=`<table><thead><tr><th>Время</th><th>Open</th><th>High</th><th>Low</th><th>Close</th>
     <th>Range</th><th>ATR</th><th>R/ATR</th><th>Вердикт</th></tr></thead><tbody>`;
   for(const row of data.rows){
-    h+=`<tr><td>${row.time}</td><td>${fmt(row.open)}</td><td>${fmt(row.high)}</td><td>${fmt(row.low)}</td>
+    const spike = row.ratio!==null && row.ratio>2;
+    const isSuper = row.ratio!==null && row.ratio>4;
+    const cls = isSuper ? (row.dir==='up'?'super-up':'super-down')
+              : spike ? (row.dir==='up'?'spike-up':'spike-down') : '';
+    const arrow = spike ? (row.dir==='up'?'<span class="arr-up">▲</span>'
+                              : row.dir==='down'?'<span class="arr-down">▼</span>':'') : '';
+    h+=`<tr class="${cls}"><td>${row.time}</td><td>${fmt(row.open)}</td><td>${fmt(row.high)}</td><td>${fmt(row.low)}</td>
     <td>${fmt(row.close)}</td><td>${fmt(row.range)}</td><td>${fmt(row.atr)}</td><td>${fmt(row.ratio,2)}</td>
-    <td class="verdict ${verdictClass(row.verdict)}">${row.mark} ${row.verdict}</td></tr>`}
+    <td class="verdict ${verdictClass(row.verdict)}">${row.mark} ${row.verdict} ${arrow}</td></tr>`}
   h+='</tbody></table>';tableWrap.innerHTML=h;
   const total=Object.entries(s.distribution).filter(([k])=>k!=='n/a').reduce((a,[,v])=>a+v,0);
-  const order=['затишье','спокойно','норма','повыш. волат.','выброс'];
+  const order=['затишье','спокойно','норма','повыш. волат.','выброс','супервсплеск'];
   let d='<div class="dist"><h3>Распределение по волатильности</h3>';
   for(const k of order){const v=s.distribution[k]||0;const pct=total?(v/total*100):0;const w=Math.round(pct*2.5);
-    d+=`<div class="dist-row"><span class="name">${k}</span><span class="count">${v}</span>
+    const detail = k==='выброс' ? `<span class="arr-up" style="font-size:11px">▲ ${s.up_spikes??0}</span>
+      <span class="arr-down" style="font-size:11px">▼ ${s.down_spikes??0}</span>`
+      : k==='супервсплеск' ? `<span class="arr-up" style="font-size:11px">▲ ${s.super_up_spikes??0}</span>
+      <span class="arr-down" style="font-size:11px">▼ ${s.super_down_spikes??0}</span>` : '';
+    d+=`<div class="dist-row"><span class="name">${k}</span>${detail}<span class="count">${v}</span>
     <span class="pct">${pct.toFixed(1)}%</span><span class="bar" style="width:${w}px"></span></div>`}
   if(s.distribution['n/a']){d+=`<div class="dist-row" style="color:var(--muted)">
     <span class="name">нет ATR (прогрев)</span><span class="count">${s.distribution['n/a']}</span><span class="pct"></span></div>`}

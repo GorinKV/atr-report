@@ -24,6 +24,7 @@ class CandleRow(BaseModel):
     range: float
     atr: Optional[float]
     ratio: Optional[float]
+    dir: str  # "up" | "down" | "flat" — направление тела свечи
     mark: str
     verdict: str
 
@@ -35,6 +36,10 @@ class ATRSummary(BaseModel):
     min_ratio: Optional[float]
     max_ratio: Optional[float]
     distribution: Dict[str, int]
+    up_spikes: int = 0    # все всплески (R/ATR > 2) вверх
+    down_spikes: int = 0  # все всплески (R/ATR > 2) вниз
+    super_up_spikes: int = 0    # супервсплески (R/ATR > 4) вверх
+    super_down_spikes: int = 0  # супервсплески (R/ATR > 4) вниз
 
 
 class ATRResponse(BaseModel):

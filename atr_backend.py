@@ -34,7 +34,8 @@ async def fetch_moex_candles(client, ticker, engine, market, board, interval, da
         if not rows: break
         all_rows.extend(rows)
         start += len(rows)
-        if len(rows) < 1000: break
+        # MOEX ISS отдаёт максимум 500 свечей на страницу; неполная страница = последняя.
+        if len(rows) < 500: break
         await asyncio.sleep(0.2)
     return pd.DataFrame(all_rows, columns=columns)
 
@@ -62,34 +63,55 @@ def classify(ratio):
     if ratio < 0.8: return "🟢", "спокойно"
     if ratio <= 1.2: return "🟡", "норма"
     if ratio <= 2.0: return "🟠", "повыш. волат."
-    return "🔴", "выброс"
+    if ratio <= 4.0: return "🔴", "выброс"
+    return "💥", "супервсплеск"
 
 
 def build_report(df, atr, report_date):
     day_df = df[df.index.date == report_date]
     rows, ratios = [], []
-    counts = {"затишье": 0, "спокойно": 0, "норма": 0, "повыш. волат.": 0, "выброс": 0, "n/a": 0}
+    counts = {"затишье": 0, "спокойно": 0, "норма": 0, "повыш. волат.": 0, "выброс": 0,
+              "супервсплеск": 0, "n/a": 0}
+    up_spikes = down_spikes = 0        # все всплески (R/ATR > 2)
+    super_up = super_down = 0          # супервсплески (R/ATR > 4)
     for ts, row in day_df.iterrows():
         candle_range = float(row["high"] - row["low"])
         a = atr.loc[ts]
         a_val = None if pd.isna(a) else float(a)
         ratio = (candle_range / a_val) if a_val else None
         mark, verdict = classify(ratio)
+        direction = ("up" if row["close"] > row["open"]
+                     else "down" if row["close"] < row["open"] else "flat")
+        if verdict in ("выброс", "супервсплеск"):
+            if direction == "up":
+                up_spikes += 1
+            elif direction == "down":
+                down_spikes += 1
+        if verdict == "супервсплеск":
+            if direction == "up":
+                super_up += 1
+            elif direction == "down":
+                super_down += 1
         counts[verdict] = counts.get(verdict, 0) + 1
         if ratio is not None: ratios.append(ratio)
         rows.append(CandleRow(time=ts.strftime("%H:%M"), datetime=ts.isoformat(),
             open=float(row["open"]), high=float(row["high"]), low=float(row["low"]),
             close=float(row["close"]), range=round(candle_range, 6),
             atr=None if a_val is None else round(a_val, 6),
-            ratio=None if ratio is None else round(ratio, 4), mark=mark, verdict=verdict))
+            ratio=None if ratio is None else round(ratio, 4), dir=direction,
+            mark=mark, verdict=verdict))
     if ratios:
         arr = np.array(ratios)
         summary = ATRSummary(total_candles=len(day_df), avg_ratio=round(float(arr.mean()), 4),
             median_ratio=round(float(np.median(arr)), 4), min_ratio=round(float(arr.min()), 4),
-            max_ratio=round(float(arr.max()), 4), distribution=counts)
+            max_ratio=round(float(arr.max()), 4), distribution=counts,
+            up_spikes=up_spikes, down_spikes=down_spikes,
+            super_up_spikes=super_up, super_down_spikes=super_down)
     else:
         summary = ATRSummary(total_candles=len(day_df), avg_ratio=None, median_ratio=None,
-            min_ratio=None, max_ratio=None, distribution=counts)
+            min_ratio=None, max_ratio=None, distribution=counts,
+            up_spikes=up_spikes, down_spikes=down_spikes,
+            super_up_spikes=super_up, super_down_spikes=super_down)
     return ATRResponse(ticker="", report_date=str(report_date), atr_period=0, rows=rows, summary=summary)
 
 
