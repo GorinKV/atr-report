@@ -1,6 +1,6 @@
 import asyncio
 import math
-from datetime import datetime, timedelta, date as _date
+from datetime import datetime, timedelta, timezone, date as _date
 
 import httpx
 import numpy as np
@@ -118,7 +118,8 @@ def build_report(df, atr, report_date):
             up_spikes=up_spikes, down_spikes=down_spikes,
             super_up_spikes=super_up, super_down_spikes=super_down)
     return ATRResponse(ticker="", report_date=str(report_date), atr_period=0,
-        generated_at=datetime.now().isoformat(timespec="seconds"),
+        # Все времена в отчёте отображаются по МСК (UTC+3).
+        generated_at=datetime.now(timezone(timedelta(hours=3))).isoformat(timespec="seconds"),
         rows=rows, summary=summary)
 
 

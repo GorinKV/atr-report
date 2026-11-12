@@ -148,11 +148,10 @@ function render(data){
     <td class="verdict ${verdictClass(row.verdict)}">${row.mark} ${row.verdict} ${arrow}</td></tr>`}
   h+='</tbody></table>';tableWrap.innerHTML=h;
   const lastCandle=data.rows[data.rows.length-1];
-  const localTime=new Date().toLocaleTimeString('ru-RU');
   const noteEl=$('data-note');
   noteEl.style.display='block';
-  noteEl.innerHTML=`Время свечей — биржевое, <b>МСК (UTC+3)</b>. Последняя свеча: <b>${lastCandle.time} МСК</b> ·
-    отчёт построен: <b>${data.generated_at.slice(11,19)}</b> (время сервера) · ваше время: <b>${localTime}</b>`;
+  noteEl.innerHTML=`Все времена — <b>МСК (UTC+3)</b>. Последняя свеча: <b>${lastCandle.time} МСК</b> ·
+    отчёт построен: <b>${data.generated_at.slice(11,19)} МСК</b>`;
   const total=Object.entries(s.distribution).filter(([k])=>k!=='n/a').reduce((a,[,v])=>a+v,0);
   const order=['затишье','спокойно','норма','повыш. волат.','выброс','супервсплеск'];
   let d='<div class="dist"><h3>Распределение по волатильности</h3>';
