@@ -91,6 +91,7 @@
   <div id="table-wrap"></div>
   <p id="data-note" style="display:none;color:var(--muted);font-size:12px;margin:10px 0 0"></p>
   <div id="dist-wrap"></div>
+  <div id="spikes-wrap"></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -99,6 +100,10 @@ function setStatus(m,k){if(!m){statusEl.className='status';statusEl.textContent=
   statusEl.className='status '+(k||'info');statusEl.textContent=m}
 function fmt(n,d=4){return n===null||n===undefined?'—':Number(n).toFixed(d)}
 function fmtInt(n){return n===null||n===undefined?'—':Number(n).toLocaleString('ru-RU')}
+function fmtWindow(period, interval){
+  const m = period*interval;
+  return m>=60 ? `${Math.floor(m/60)} ч ${m%60} мин` : `${m} мин`;
+}
 function verdictClass(v){return 'v-'+v.replace(/\s+/g,'-').replace(/\.$/,'')}
 async function load(){
   const btn=$('load');btn.disabled=true;setStatus('Загрузка с MOEX ISS…','info');
@@ -113,7 +118,7 @@ async function load(){
     const r=await fetch('/api/atr/report?'+p);
     if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}
       setStatus('Ошибка: '+m,'error');summaryEl.innerHTML='';tableWrap.innerHTML='';distWrap.innerHTML='';
-      $('data-note').style.display='none';return}
+      $('spikes-wrap').innerHTML='';$('data-note').style.display='none';return}
     render(await r.json());setStatus(null);
   }catch(e){setStatus('Сеть/сервер: '+e.message,'error')}
   finally{btn.disabled=false}
@@ -123,7 +128,8 @@ function render(data){
   summaryEl.innerHTML=`
     <div class="card"><div class="k">Тикер</div><div class="v">${data.ticker}</div></div>
     <div class="card"><div class="k">Дата</div><div class="v">${data.report_date}</div></div>
-    <div class="card"><div class="k">ATR период</div><div class="v">${data.atr_period}</div></div>
+    <div class="card"><div class="k">ATR период</div><div class="v">${data.atr_period} свечей</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">≈ ${fmtWindow(data.atr_period, data.interval)}</div></div>
     <div class="card"><div class="k">Свечей</div><div class="v">${s.total_candles}</div></div>
     <div class="card"><div class="k">Средний R/ATR</div><div class="v">${fmt(s.avg_ratio,2)}</div></div>
     <div class="card"><div class="k">Медиана</div><div class="v">${fmt(s.median_ratio,2)}</div></div>
@@ -133,7 +139,7 @@ function render(data){
     <div class="card"><div class="k">Супервсплески</div>
       <div class="v">💥 <span class="arr-up">▲ ${s.super_up_spikes??0}</span> / <span class="arr-down">▼ ${s.super_down_spikes??0}</span></div></div>
     <div class="card"><div class="k">Объём дня</div><div class="v">${fmtInt(s.total_volume)}</div></div>`;
-  if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';$('data-note').style.display='none';return}
+  if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';$('spikes-wrap').innerHTML='';$('data-note').style.display='none';return}
   let h=`<table><thead><tr><th>Время</th><th>Open</th><th>High</th><th>Low</th><th>Close</th>
     <th>Объём</th><th>Range</th><th>ATR</th><th>R/ATR</th><th>Вердикт</th></tr></thead><tbody>`;
   for(const row of data.rows){
@@ -165,6 +171,27 @@ function render(data){
   if(s.distribution['n/a']){d+=`<div class="dist-row" style="color:var(--muted)">
     <span class="name">нет ATR (прогрев)</span><span class="count">${s.distribution['n/a']}</span><span class="pct"></span></div>`}
   d+='</div>';distWrap.innerHTML=d;
+  // Список всплесков за всё окно истории (все дни, по которым считался ATR)
+  const sw=$('spikes-wrap');
+  if(!data.spikes.length){
+    sw.innerHTML='<div class="dist"><h3>Всплески за окно истории</h3>'+
+      '<p style="color:var(--muted);margin:0">Всплесков (R/ATR > 2) не найдено.</p></div>';
+    return;
+  }
+  let s1='<div class="dist"><h3>Всплески за окно истории · '+data.spikes.length+
+    ' (топ по силе)</h3><table><thead><tr><th>Дата</th><th>Время</th><th>Тип</th><th>R/ATR</th>'+
+    '<th>Напр.</th><th>Close</th><th>Объём</th></tr></thead><tbody>';
+  for(const sp of data.spikes){
+    const sup = sp.kind==='супервсплеск';
+    const dir = sp.dir==='up'?'<span class="arr-up">▲ вверх</span>'
+             : sp.dir==='down'?'<span class="arr-down">▼ вниз</span>':'—';
+    s1+=`<tr class="${sup?(sp.dir==='up'?'super-up':'super-down'):(sp.dir==='up'?'spike-up':'spike-down')}">`+
+      `<td>${sp.date}</td><td>${sp.time}</td>`+
+      `<td>${sup?'💥 <span class="v-супервсплеск">супервсплеск</span>':'🔴 выброс'}</td>`+
+      `<td><b>${sp.ratio}</b></td><td>${dir}</td><td>${fmt(sp.close)}</td><td>${fmtInt(sp.volume)}</td></tr>`;
+  }
+  s1+='</tbody></table></div>';
+  sw.innerHTML=s1;
 }
 $('load').addEventListener('click',load);
 $('report_date').addEventListener('change',load);

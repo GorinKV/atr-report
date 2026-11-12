@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-from atr_schemas import ATRRequest, ATRResponse, CandleRow, ATRSummary
+from atr_schemas import ATRRequest, ATRResponse, CandleRow, ATRSummary, SpikeItem
 
 router = APIRouter(prefix="/api/atr", tags=["atr"])
 MOEX_BASE = "https://iss.moex.com/iss"
@@ -67,6 +67,9 @@ def classify(ratio):
     return "💥", "супервсплеск"
 
 
+SPIKES_LIMIT = 100  # максимум всплесков в списке за окно истории
+
+
 def build_report(df, atr, report_date):
     day_df = df[df.index.date == report_date]
     rows, ratios = [], []
@@ -123,6 +126,29 @@ def build_report(df, atr, report_date):
         rows=rows, summary=summary)
 
 
+def build_history_spikes(df, atr, limit=SPIKES_LIMIT):
+    """Всплески (R/ATR > 2) и супервсплески (> 4) за всё окно истории,
+    по которому считался ATR. Отсортированы по силе, самые сильные сверху."""
+    spikes = []
+    for ts, row in df.iterrows():
+        a = atr.loc[ts]
+        if pd.isna(a) or not a:
+            continue
+        candle_range = float(row["high"] - row["low"])
+        ratio = candle_range / float(a)
+        if ratio <= 2.0:
+            continue
+        direction = ("up" if row["close"] > row["open"]
+                     else "down" if row["close"] < row["open"] else "flat")
+        spikes.append(SpikeItem(
+            date=ts.date().isoformat(), time=ts.strftime("%H:%M"),
+            kind="супервсплеск" if ratio > 4.0 else "выброс",
+            ratio=round(ratio, 2), dir=direction,
+            close=float(row["close"]), volume=int(row["volume"])))
+    spikes.sort(key=lambda s: -s.ratio)
+    return spikes[:limit]
+
+
 async def _run_report(req: ATRRequest) -> ATRResponse:
     async with httpx.AsyncClient() as client:
         raw = await fetch_moex_candles(client, req.ticker.upper(), req.engine,
@@ -138,6 +164,8 @@ async def _run_report(req: ATRRequest) -> ATRResponse:
     resp = build_report(df, atr, report_date)
     resp.ticker = req.ticker.upper()
     resp.atr_period = req.atr_period
+    resp.interval = req.interval
+    resp.spikes = build_history_spikes(df, atr)
     return resp
 
 

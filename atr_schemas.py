@@ -44,10 +44,22 @@ class ATRSummary(BaseModel):
     total_volume: int = 0  # суммарный объём за день
 
 
+class SpikeItem(BaseModel):
+    date: str
+    time: str
+    kind: str  # "выброс" (R/ATR > 2) | "супервсплеск" (R/ATR > 4)
+    ratio: float
+    dir: str   # "up" | "down" | "flat"
+    close: float
+    volume: int
+
+
 class ATRResponse(BaseModel):
     ticker: str
     report_date: str
     atr_period: int
-    generated_at: str  # момент построения отчёта (время сервера, ISO)
+    interval: int = 10  # минут на свечу, для подписи окна ATR
+    generated_at: str  # момент построения отчёта (МСК, ISO)
     rows: List[CandleRow]
     summary: ATRSummary
+    spikes: List[SpikeItem] = Field(default_factory=list)  # всплески за всё окно истории
