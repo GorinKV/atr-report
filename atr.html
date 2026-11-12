@@ -64,6 +64,16 @@
   .dist-row .name{width:130px}
   .dist-row .count{width:50px;text-align:right;color:var(--muted)}
   .dist-row .pct{width:60px;text-align:right;color:var(--muted)}
+  .subh{margin:16px 0 8px;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .filters{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+  .filters select{background:#0f1115;border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px;outline:none}
+  .filters select:focus{border-color:var(--accent)}
+  .hourchart{display:flex;align-items:flex-end;gap:3px;height:90px;padding:6px 2px 0}
+  .hcol{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:2px}
+  .hcol .hv{font-size:10px;color:var(--muted)}
+  .hbar{width:100%;max-width:30px;background:var(--accent);border-radius:2px 2px 0 0;position:relative;min-height:2px}
+  .hbar .hsup{position:absolute;bottom:0;left:0;right:0;background:var(--red);border-radius:2px 2px 0 0}
+  .hcol .hn{font-size:10px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -118,7 +128,7 @@ async function load(){
     const r=await fetch('/api/atr/report?'+p);
     if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}
       setStatus('Ошибка: '+m,'error');summaryEl.innerHTML='';tableWrap.innerHTML='';distWrap.innerHTML='';
-      $('spikes-wrap').innerHTML='';$('data-note').style.display='none';return}
+      $('spikes-wrap').innerHTML='';spikeData=null;$('data-note').style.display='none';return}
     render(await r.json());setStatus(null);
   }catch(e){setStatus('Сеть/сервер: '+e.message,'error')}
   finally{btn.disabled=false}
@@ -139,7 +149,7 @@ function render(data){
     <div class="card"><div class="k">Супервсплески</div>
       <div class="v">💥 <span class="arr-up">▲ ${s.super_up_spikes??0}</span> / <span class="arr-down">▼ ${s.super_down_spikes??0}</span></div></div>
     <div class="card"><div class="k">Объём дня</div><div class="v">${fmtInt(s.total_volume)}</div></div>`;
-  if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';$('spikes-wrap').innerHTML='';$('data-note').style.display='none';return}
+  if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';$('spikes-wrap').innerHTML='';spikeData=null;$('data-note').style.display='none';return}
   let h=`<table><thead><tr><th>Время</th><th>Open</th><th>High</th><th>Low</th><th>Close</th>
     <th>Объём</th><th>Range</th><th>ATR</th><th>R/ATR</th><th>Вердикт</th></tr></thead><tbody>`;
   for(const row of data.rows){
@@ -171,31 +181,80 @@ function render(data){
   if(s.distribution['n/a']){d+=`<div class="dist-row" style="color:var(--muted)">
     <span class="name">нет ATR (прогрев)</span><span class="count">${s.distribution['n/a']}</span><span class="pct"></span></div>`}
   d+='</div>';distWrap.innerHTML=d;
-  // Список всплесков за всё окно истории (все дни, по которым считался ATR)
+  renderSpikePanel(data);
+}
+
+// ===== Панель аналитики всплесков (окно истории) =====
+let spikeData=null, spikeFilter={kind:'all', dir:'all'};
+
+function renderSpikePanel(data){
   const sw=$('spikes-wrap');
   if(!data.spikes.length){
+    spikeData=null;
     sw.innerHTML='<div class="dist"><h3>Всплески за окно истории</h3>'+
       '<p style="color:var(--muted);margin:0">Всплесков (R/ATR > 2) не найдено.</p></div>';
     return;
   }
-  let s1='<div class="dist"><h3>Всплески за окно истории · '+data.spikes.length+
-    ' (топ по силе)</h3><table><thead><tr><th>Дата</th><th>Время</th><th>Тип</th><th>R/ATR</th>'+
+  spikeData=data;
+  // Сводка по дням
+  let days='<h3 class="subh">Сводка по дням</h3><table><thead><tr><th>Дата</th><th>Всплесков</th>'+
+    '<th>💥 супер</th><th>▲ вверх</th><th>▼ вниз</th><th>Макс R/ATR</th></tr></thead><tbody>';
+  for(const d of data.by_day){
+    days+=`<tr><td>${d.date}</td><td>${d.count}</td><td>${d.super_count?'💥 '+d.super_count:0}</td>`+
+      `<td class="arr-up">${d.up||'—'}</td><td class="arr-down">${d.down||'—'}</td><td><b>${d.max_ratio}</b></td></tr>`;
+  }
+  days+='</tbody></table>';
+  // Распределение по часам (МСК)
+  const hours=Object.keys(data.by_hour);
+  const maxC=Math.max(...hours.map(h=>data.by_hour[h]));
+  let chart='<h3 class="subh">Всплески по часам (МСК) · красным — супервсплески</h3><div class="hourchart">';
+  for(const h of hours){
+    const v=data.by_hour[h], sv=data.by_hour_super[h]||0;
+    const vh=Math.round(v/maxC*62);
+    chart+=`<div class="hcol" title="${h}:00 — всего ${v}${sv?', супервсплесков '+sv:''}">
+      <span class="hv">${v}</span>
+      <div class="hbar" style="height:${vh}px"><div class="hsup" style="height:${Math.round(sv/maxC*62)}px"></div></div>
+      <span class="hn">${h}</span></div>`;
+  }
+  chart+='</div>';
+  sw.innerHTML=`<div class="dist"><h3>Всплески за окно истории · ${data.spikes.length} (топ по силе)</h3>
+    <div class="filters">Тип: <select id="f-kind">
+        <option value="all">все</option><option value="выброс">только выбросы</option>
+        <option value="супервсплеск">только супервсплески</option></select>
+      Направление: <select id="f-dir">
+        <option value="all">все</option><option value="up">▲ вверх</option>
+        <option value="down">▼ вниз</option></select></div>
+    ${days}${chart}<h3 class="subh" id="spike-list-h"></h3><div id="spike-list"></div></div>`;
+  $('f-kind').value=spikeFilter.kind; $('f-dir').value=spikeFilter.dir;
+  renderSpikeList();
+}
+
+function renderSpikeList(){
+  if(!spikeData) return;
+  const rows=spikeData.spikes.filter(sp=>
+    (spikeFilter.kind==='all'||sp.kind===spikeFilter.kind)&&
+    (spikeFilter.dir==='all'||sp.dir===spikeFilter.dir));
+  $('spike-list-h').textContent=`Список всплесков · ${rows.length}`;
+  if(!rows.length){$('spike-list').innerHTML='<p style="color:var(--muted);margin:0">Под фильтр ничего не попало.</p>';return}
+  let h='<table><thead><tr><th>Дата</th><th>Время</th><th>Тип</th><th>R/ATR</th>'+
     '<th>Напр.</th><th>Close</th><th>Объём</th></tr></thead><tbody>';
-  for(const sp of data.spikes){
-    const sup = sp.kind==='супервсплеск';
-    const dir = sp.dir==='up'?'<span class="arr-up">▲ вверх</span>'
-             : sp.dir==='down'?'<span class="arr-down">▼ вниз</span>':'—';
-    s1+=`<tr class="${sup?(sp.dir==='up'?'super-up':'super-down'):(sp.dir==='up'?'spike-up':'spike-down')}">`+
+  for(const sp of rows){
+    const sup=sp.kind==='супервсплеск';
+    const dir=sp.dir==='up'?'<span class="arr-up">▲ вверх</span>'
+            :sp.dir==='down'?'<span class="arr-down">▼ вниз</span>':'—';
+    h+=`<tr class="${sup?(sp.dir==='up'?'super-up':'super-down'):(sp.dir==='up'?'spike-up':'spike-down')}">`+
       `<td>${sp.date}</td><td>${sp.time}</td>`+
       `<td>${sup?'💥 <span class="v-супервсплеск">супервсплеск</span>':'🔴 выброс'}</td>`+
       `<td><b>${sp.ratio}</b></td><td>${dir}</td><td>${fmt(sp.close)}</td><td>${fmtInt(sp.volume)}</td></tr>`;
   }
-  s1+='</tbody></table></div>';
-  sw.innerHTML=s1;
+  h+='</tbody></table>';
+  $('spike-list').innerHTML=h;
 }
 $('load').addEventListener('click',load);
 $('report_date').addEventListener('change',load);
 $('ticker').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
+$('f-kind').addEventListener('change',e=>{spikeFilter.kind=e.target.value;renderSpikeList()});
+$('f-dir').addEventListener('change',e=>{spikeFilter.dir=e.target.value;renderSpikeList()});
 load();
 </script>
 </body>
