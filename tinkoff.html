@@ -41,6 +41,15 @@
   .chip b{color:var(--text);font-weight:600}
   .bar{display:inline-block;height:6px;border-radius:3px;vertical-align:middle;margin-left:6px}
   .bar.buy{background:var(--green)} .bar.sell{background:var(--red)}
+  .super{box-shadow:inset 0 0 0 1px var(--accent);font-weight:700}
+  input[type=range]{accent-color:var(--accent)}
+  .subh{margin:16px 0 8px;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .hourchart{display:flex;align-items:flex-end;gap:3px;height:90px;padding:6px 2px 0}
+  .hcol{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:2px}
+  .hcol .hv{font-size:10px;color:var(--muted)}
+  .hbar{width:100%;max-width:30px;background:var(--accent);border-radius:2px 2px 0 0;position:relative;min-height:2px}
+  .hbar .hsup{position:absolute;bottom:0;left:0;right:0;background:var(--red);border-radius:2px 2px 0 0}
+  .hcol .hn{font-size:10px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -55,6 +64,8 @@
     </select>
   </div>
   <div class="field"><label>Глубина</label><input id="depth" type="number" value="20" min="1" max="50"></div>
+  <div class="field"><label>Сила плотности: <span id="dk-val">3</span>×</label>
+    <input id="density_k" type="range" min="1" max="10" step="0.5" value="3" style="min-width:150px"></div>
   <div class="field"><label>Окно ленты, мин</label><input id="minutes" type="number" value="60" min="1" max="60"></div>
   <button id="load">Загрузить</button>
 </div>
@@ -62,6 +73,9 @@
   <div id="status" class="status"></div>
   <div class="panel"><h2>Стакан</h2><div id="ob-summary" class="summary"></div><div id="ob-table"></div></div>
   <div class="panel"><h2>Лента</h2><div id="tr-summary" class="summary"></div><div id="tr-table"></div></div>
+  <div class="panel" style="grid-column:1/-1"><h2>История плотностей</h2>
+    <div id="dh-note" style="color:var(--muted);font-size:12px;margin-bottom:8px"></div>
+    <div id="dh-body"></div></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -76,15 +90,18 @@ async function load(){
   const class_code=$('class_code').value;
   const depth=$('depth').value||20;
   const minutes=$('minutes').value||60;
+  const density_k=$('density_k').value||3;
   try{
-    const [obR, trR] = await Promise.all([
-      fetch(`/api/tinkoff/orderbook?ticker=${ticker}&class_code=${class_code}&depth=${depth}`),
+    const [obR, trR, hdR] = await Promise.all([
+      fetch(`/api/tinkoff/orderbook?ticker=${ticker}&class_code=${class_code}&depth=${depth}&density_k=${density_k}`),
       fetch(`/api/tinkoff/trades?ticker=${ticker}&class_code=${class_code}&minutes=${minutes}`),
+      fetch(`/api/tinkoff/densities/history?ticker=${ticker}&limit=300`),
     ]);
     if(!obR.ok) throw new Error('Стакан: '+(await obR.text()));
     if(!trR.ok) throw new Error('Лента: '+(await trR.text()));
     renderOrderbook(await obR.json());
     renderTrades(await trR.json());
+    if(hdR.ok) renderDensHistory((await hdR.json()).events);
     setStatus(null);
   }catch(e){setStatus('Ошибка: '+e.message,'error')}
   finally{btn.disabled=false}
@@ -92,6 +109,7 @@ async function load(){
 function renderOrderbook(ob){
   const imb=ob.imbalance;
   const imbColor = imb>0.1?'var(--green)':imb<-0.1?'var(--red)':'var(--text)';
+  const supN = ob.densities.filter(l=>l.is_super).length;
   $('ob-summary').innerHTML = `
     <div class="chip">FIGI: <b>${ob.figi}</b></div>
     <div class="chip">Mid: <b>${fmt(ob.mid_price)}</b></div>
@@ -99,18 +117,19 @@ function renderOrderbook(ob){
     <div class="chip">Bid: <b style="color:var(--green)">${fmtInt(ob.bid_total)}</b></div>
     <div class="chip">Ask: <b style="color:var(--red)">${fmtInt(ob.ask_total)}</b></div>
     <div class="chip">Дисбаланс: <b style="color:${imbColor}">${(imb*100).toFixed(1)}%</b></div>
-    <div class="chip">Плотностей: <b>${ob.densities.length}</b></div>`;
+    <div class="chip">Плотностей: <b>${ob.densities.length}</b>${supN?` <b style="color:var(--red)">💥 ${supN}</b>`:''}</div>`;
   let h=`<table><thead><tr><th>Цена</th><th>Объём</th><th>R/avg</th><th>Флаг</th></tr></thead><tbody>`;
+  const flag=(lvl,side)=>lvl.is_super?'💥':(lvl.is_density?(side==='ask'?'🔴':'🟢'):'');
   for(const lvl of [...ob.asks].reverse()){
-    h+=`<tr class="${lvl.is_density?'density ask-side':''}">
+    h+=`<tr class="${lvl.is_density?'density ask-side':''} ${lvl.is_super?'super':''}">
       <td class="ask">${fmt(lvl.price)}</td><td>${fmtInt(lvl.quantity)}</td>
-      <td>${lvl.ratio??'—'}</td><td>${lvl.is_density?'🔴':''}</td></tr>`;}
+      <td>${lvl.ratio??'—'}</td><td>${flag(lvl,'ask')}</td></tr>`;}
   h+=`<tr><td colspan="4" style="text-align:center;color:var(--muted);font-size:12px">
       ─── спред ${fmt(ob.spread)} ───</td></tr>`;
   for(const lvl of ob.bids){
-    h+=`<tr class="${lvl.is_density?'density':''}">
+    h+=`<tr class="${lvl.is_density?'density':''} ${lvl.is_super?'super':''}">
       <td class="bid">${fmt(lvl.price)}</td><td>${fmtInt(lvl.quantity)}</td>
-      <td>${lvl.ratio??'—'}</td><td>${lvl.is_density?'🟢':''}</td></tr>`;}
+      <td>${lvl.ratio??'—'}</td><td>${flag(lvl,'bid')}</td></tr>`;}
   h+='</tbody></table>';$('ob-table').innerHTML=h;
 }
 function renderTrades(tr){
@@ -142,9 +161,66 @@ function renderTrades(tr){
       <td>${fmtInt(t.quantity)}</td><td class="${c}">${t.side}</td></tr>`;}
   h+='</tbody></table>';$('tr-table').innerHTML=h;
 }
+// ===== История плотностей =====
+function renderDensHistory(events){
+  const note=$('dh-note'), body=$('dh-body');
+  if(!events.length){
+    note.textContent='История пуста. Плотности фиксируются при каждом обновлении стакана (раз в 15 с, пока открыта вкладка) — загляните во время торгов.';
+    body.innerHTML=''; return;
+  }
+  // Фолбэк: суперплотностей нет — показываем обычные плотности.
+  const supers=events.filter(e=>e.is_super);
+  const useAll=!supers.length;
+  const src=useAll?events:supers;
+  note.textContent=useAll
+    ? 'Суперплотностей пока не зафиксировано — показываю обычные плотности. Сузить можно ползунком силы выше.'
+    : `Показаны только суперплотности (💥). Всего событий: ${events.length}, из них супер: ${supers.length}.`;
+  // Агрегаты по дням и часам (время МСК)
+  const byDay={}, byHour={}, byHourSuper={};
+  for(const e of src){
+    const d=e.ts.slice(0,10), h=e.ts.slice(11,13);
+    byDay[d]=(byDay[d]||0)+1;
+    byHour[h]=(byHour[h]||0)+1;
+    if(e.is_super) byHourSuper[h]=(byHourSuper[h]||0)+1;
+  }
+  const days=Object.keys(byDay).sort().reverse();
+  let h1='<h3 class="subh">Сводка по дням</h3><table><thead><tr><th>Дата</th><th>Плотностей</th><th>💥 супер</th></tr></thead><tbody>';
+  for(const d of days){
+    const cnt=src.filter(e=>e.ts.startsWith(d)).length;
+    const sup=src.filter(e=>e.ts.startsWith(d)&&e.is_super).length;
+    h1+=`<tr><td>${d}</td><td>${cnt}</td><td>${sup?'💥 '+sup:0}</td></tr>`;
+  }
+  h1+='</tbody></table>';
+  const hours=Object.keys(byHour).sort();
+  const maxC=Math.max(...hours.map(h=>byHour[h]));
+  let h2='<h3 class="subh">По часам (МСК) · красным — суперплотности</h3><div class="hourchart">';
+  for(const h of hours){
+    const v=byHour[h], sv=byHourSuper[h]||0;
+    h2+=`<div class="hcol" title="${h}:00 — всего ${v}${sv?', супер '+sv:''}">
+      <span class="hv">${v}</span>
+      <div class="hbar" style="height:${Math.round(v/maxC*62)}px"><div class="hsup" style="height:${Math.round(sv/maxC*62)}px"></div></div>
+      <span class="hn">${h}</span></div>`;
+  }
+  h2+='</div>';
+  let h3=`<h3 class="subh">События · последние ${Math.min(src.length,30)}</h3>
+    <table><thead><tr><th>Время (МСК)</th><th>Сторона</th><th>Цена</th><th>Объём</th><th>R/avg</th><th>Тип</th></tr></thead><tbody>`;
+  for(const e of src.slice(0,30)){
+    const c=e.side==='bid'?'bid':'ask';
+    h3+=`<tr class="${e.is_super?'super':''}"><td>${e.ts.slice(11,19)}</td>
+      <td class="${c}">${e.side==='bid'?'🟢 bid':'🔴 ask'}</td><td class="${c}">${fmt(e.price)}</td>
+      <td>${fmtInt(e.quantity)}</td><td>${e.ratio}</td><td>${e.is_super?'💥 супер':'🔴 плотность'}</td></tr>`;
+  }
+  h3+='</tbody></table>';
+  body.innerHTML=h1+h2+h3;
+}
 $('load').addEventListener('click',load);
 $('ticker').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
 $('class_code').addEventListener('change',load);
+$('density_k').addEventListener('input',e=>{$('dk-val').textContent=e.target.value});
+$('density_k').addEventListener('change',load);
+// Автообновление: стакан + лента + история каждые 15 с, пока вкладка видима.
+// Каждое обновление фиксирует новые плотности в историю на бэкенде.
+setInterval(()=>{if(document.visibilityState==='visible')load()},15000);
 load();
 </script>
 </body>
