@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>MOEX · ATR отчёт</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--bg:#0f1115;--panel:#161a22;--border:#242a36;--text:#d7dbe3;--muted:#7b8494;
+        --accent:#4f9eff;--green:#3fbf7f;--yellow:#e6c14a;--orange:#e6903a;--red:#e05b5b;--blue:#4f9eff;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+       background:var(--bg);color:var(--text);font-size:14px}
+  header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{margin:0;font-size:18px;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  .controls{padding:16px 24px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;
+            border-bottom:1px solid var(--border);background:var(--panel)}
+  .field{display:flex;flex-direction:column;gap:4px}
+  .field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .field input,.field select{background:#0f1115;border:1px solid var(--border);color:var(--text);
+       padding:7px 10px;border-radius:6px;font-size:13px;min-width:90px;outline:none}
+  .field input:focus,.field select:focus{border-color:var(--accent)}
+  button{background:var(--accent);color:#fff;border:none;padding:8px 18px;border-radius:6px;
+         font-size:13px;font-weight:500;cursor:pointer;transition:opacity .15s}
+  button:hover{opacity:.85}
+  button:disabled{opacity:.5;cursor:wait}
+  main{padding:20px 24px 40px}
+  .status{padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;display:none}
+  .status.error{display:block;background:#2a1416;color:var(--red);border:1px solid #4a1f22}
+  .status.info{display:block;background:#14202a;color:var(--accent);border:1px solid #1f3a4a}
+  .summary{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 16px;min-width:130px}
+  .card .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+  .card .v{font-size:18px;font-weight:600}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+  thead th{text-align:right;padding:8px 10px;border-bottom:1px solid var(--border);color:var(--muted);
+           font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px;position:sticky;top:0;background:var(--bg)}
+  thead th:first-child,thead th:last-child{text-align:left}
+  tbody td{padding:7px 10px;border-bottom:1px solid #1a1f29;text-align:right}
+  tbody td:first-child,tbody td:last-child{text-align:left}
+  tbody tr:hover{background:#141821}
+  .verdict{font-weight:500}
+  .v-затишье{color:var(--blue)}
+  .v-спокойно{color:var(--green)}
+  .v-норма{color:var(--yellow)}
+  .v-повыш-волат{color:var(--orange)}
+  .v-выброс{color:var(--red)}
+  .v-na{color:var(--muted)}
+  .bar{display:inline-block;height:8px;background:var(--accent);border-radius:2px;vertical-align:middle;margin-left:8px;min-width:1px}
+  .dist{margin-top:20px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+  .dist h3{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .dist-row{display:flex;align-items:center;gap:12px;padding:4px 0;font-size:13px}
+  .dist-row .name{width:130px}
+  .dist-row .count{width:50px;text-align:right;color:var(--muted)}
+  .dist-row .pct{width:60px;text-align:right;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>MOEX · ATR отчёт</h1>
+  <span class="sub">10-минутные свечи · сравнение Range / ATR</span>
+</header>
+<div class="controls">
+  <div class="field"><label>Тикер</label><input id="ticker" value="SBER" maxlength="12"></div>
+  <div class="field"><label>Board</label>
+    <select id="board">
+      <option value="TQBR" selected>TQBR (акции T+2)</option>
+      <option value="TQTF">TQTF (ETF)</option>
+      <option value="RFUD">RFUD (фьючерсы)</option>
+    </select>
+  </div>
+  <div class="field"><label>Период ATR</label><input id="atr_period" type="number" value="14" min="2" max="100"></div>
+  <div class="field"><label>Дней истории</label><input id="days_back" type="number" value="10" min="1" max="90"></div>
+  <div class="field"><label>Дата (пусто = последний)</label><input id="report_date" type="date"></div>
+  <button id="load">Загрузить</button>
+</div>
+<main>
+  <div id="status" class="status"></div>
+  <div id="summary" class="summary"></div>
+  <div id="table-wrap"></div>
+  <div id="dist-wrap"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const statusEl=$('status'),summaryEl=$('summary'),tableWrap=$('table-wrap'),distWrap=$('dist-wrap');
+function setStatus(m,k){if(!m){statusEl.className='status';statusEl.textContent='';return}
+  statusEl.className='status '+(k||'info');statusEl.textContent=m}
+function fmt(n,d=4){return n===null||n===undefined?'—':Number(n).toFixed(d)}
+function verdictClass(v){return 'v-'+v.replace(/\s+/g,'-').replace(/\.$/,'')}
+async function load(){
+  const btn=$('load');btn.disabled=true;setStatus('Загрузка с MOEX ISS…','info');
+  const p=new URLSearchParams({
+    ticker:$('ticker').value.trim().toUpperCase()||'SBER',
+    board:$('board').value,
+    atr_period:$('atr_period').value||14,
+    days_back:$('days_back').value||10,
+  });
+  const rd=$('report_date').value;if(rd)p.set('report_date',rd);
+  try{
+    const r=await fetch('/api/atr/report?'+p);
+    if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}
+      setStatus('Ошибка: '+m,'error');summaryEl.innerHTML='';tableWrap.innerHTML='';distWrap.innerHTML='';return}
+    render(await r.json());setStatus(null);
+  }catch(e){setStatus('Сеть/сервер: '+e.message,'error')}
+  finally{btn.disabled=false}
+}
+function render(data){
+  const s=data.summary;
+  summaryEl.innerHTML=`
+    <div class="card"><div class="k">Тикер</div><div class="v">${data.ticker}</div></div>
+    <div class="card"><div class="k">Дата</div><div class="v">${data.report_date}</div></div>
+    <div class="card"><div class="k">ATR период</div><div class="v">${data.atr_period}</div></div>
+    <div class="card"><div class="k">Свечей</div><div class="v">${s.total_candles}</div></div>
+    <div class="card"><div class="k">Средний R/ATR</div><div class="v">${fmt(s.avg_ratio,2)}</div></div>
+    <div class="card"><div class="k">Медиана</div><div class="v">${fmt(s.median_ratio,2)}</div></div>
+    <div class="card"><div class="k">Мин / Макс</div><div class="v">${fmt(s.min_ratio,2)} / ${fmt(s.max_ratio,2)}</div></div>`;
+  if(!data.rows.length){tableWrap.innerHTML='<p style="color:var(--muted)">Нет свечей за выбранный день (выходной?).</p>';distWrap.innerHTML='';return}
+  let h=`<table><thead><tr><th>Время</th><th>Open</th><th>High</th><th>Low</th><th>Close</th>
+    <th>Range</th><th>ATR</th><th>R/ATR</th><th>Вердикт</th></tr></thead><tbody>`;
+  for(const row of data.rows){
+    h+=`<tr><td>${row.time}</td><td>${fmt(row.open)}</td><td>${fmt(row.high)}</td><td>${fmt(row.low)}</td>
+    <td>${fmt(row.close)}</td><td>${fmt(row.range)}</td><td>${fmt(row.atr)}</td><td>${fmt(row.ratio,2)}</td>
+    <td class="verdict ${verdictClass(row.verdict)}">${row.mark} ${row.verdict}</td></tr>`}
+  h+='</tbody></table>';tableWrap.innerHTML=h;
+  const total=Object.entries(s.distribution).filter(([k])=>k!=='n/a').reduce((a,[,v])=>a+v,0);
+  const order=['затишье','спокойно','норма','повыш. волат.','выброс'];
+  let d='<div class="dist"><h3>Распределение по волатильности</h3>';
+  for(const k of order){const v=s.distribution[k]||0;const pct=total?(v/total*100):0;const w=Math.round(pct*2.5);
+    d+=`<div class="dist-row"><span class="name">${k}</span><span class="count">${v}</span>
+    <span class="pct">${pct.toFixed(1)}%</span><span class="bar" style="width:${w}px"></span></div>`}
+  if(s.distribution['n/a']){d+=`<div class="dist-row" style="color:var(--muted)">
+    <span class="name">нет ATR (прогрев)</span><span class="count">${s.distribution['n/a']}</span><span class="pct"></span></div>`}
+  d+='</div>';distWrap.innerHTML=d;
+}
+$('load').addEventListener('click',load);
+$('report_date').addEventListener('change',load);
+$('ticker').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>MOEX · Стакан и лента</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--bg:#0f1115;--panel:#161a22;--border:#242a36;--text:#d7dbe3;--muted:#7b8494;
+        --accent:#4f9eff;--green:#3fbf7f;--red:#e05b5b;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+       background:var(--bg);color:var(--text);font-size:14px}
+  header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center}
+  header h1{margin:0;font-size:18px;font-weight:600}
+  .controls{padding:16px 24px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;
+            border-bottom:1px solid var(--border);background:var(--panel)}
+  .field{display:flex;flex-direction:column;gap:4px}
+  .field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .field input,.field select{background:#0f1115;border:1px solid var(--border);color:var(--text);
+       padding:7px 10px;border-radius:6px;font-size:13px;min-width:90px;outline:none}
+  button{background:var(--accent);color:#fff;border:none;padding:8px 18px;border-radius:6px;
+         font-size:13px;font-weight:500;cursor:pointer}
+  button:hover{opacity:.85}
+  button:disabled{opacity:.5;cursor:wait}
+  main{padding:20px 24px;display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+  .panel h2{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--muted);
+            text-transform:uppercase;letter-spacing:.5px}
+  .status{padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;display:none;grid-column:1/-1}
+  .status.error{display:block;background:#2a1416;color:var(--red);border:1px solid #4a1f22}
+  .status.info{display:block;background:#14202a;color:var(--accent);border:1px solid #1f3a4a}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+  th,td{padding:6px 8px;text-align:right;border-bottom:1px solid #1a1f29}
+  th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase}
+  th:first-child,td:first-child{text-align:left}
+  .bid{color:var(--green)} .ask{color:var(--red)}
+  .density{background:#1f2a1f;font-weight:600} .density.ask-side{background:#2a1f1f}
+  .summary{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+  .chip{background:#0f1115;border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px}
+  .chip b{color:var(--text);font-weight:600}
+  .bar{display:inline-block;height:6px;border-radius:3px;vertical-align:middle;margin-left:6px}
+  .bar.buy{background:var(--green)} .bar.sell{background:var(--red)}
+</style>
+</head>
+<body>
+<header><h1>Стакан и лента · T-Invest API</h1></header>
+<div class="controls">
+  <div class="field"><label>Тикер</label><input id="ticker" value="SBER" maxlength="12"></div>
+  <div class="field"><label>Class code</label>
+    <select id="class_code">
+      <option value="TQBR" selected>TQBR (акции)</option>
+      <option value="TQTF">TQTF (ETF)</option>
+      <option value="SPBFUT">SPBFUT (фьючерсы)</option>
+    </select>
+  </div>
+  <div class="field"><label>Глубина</label><input id="depth" type="number" value="20" min="1" max="50"></div>
+  <div class="field"><label>Окно ленты, мин</label><input id="minutes" type="number" value="60" min="1" max="60"></div>
+  <button id="load">Загрузить</button>
+</div>
+<main>
+  <div id="status" class="status"></div>
+  <div class="panel"><h2>Стакан</h2><div id="ob-summary" class="summary"></div><div id="ob-table"></div></div>
+  <div class="panel"><h2>Лента</h2><div id="tr-summary" class="summary"></div><div id="tr-table"></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const statusEl=$('status');
+function setStatus(m,k){if(!m){statusEl.className='status';statusEl.textContent='';return}
+  statusEl.className='status '+(k||'info');statusEl.textContent=m}
+function fmt(n,d=4){return n===null||n===undefined?'—':Number(n).toFixed(d)}
+function fmtInt(n){return n===null||n===undefined?'—':Number(n).toLocaleString('ru-RU')}
+async function load(){
+  const btn=$('load');btn.disabled=true;setStatus('Загрузка…','info');
+  const ticker=$('ticker').value.trim().toUpperCase()||'SBER';
+  const class_code=$('class_code').value;
+  const depth=$('depth').value||20;
+  const minutes=$('minutes').value||60;
+  try{
+    const [obR, trR] = await Promise.all([
+      fetch(`/api/tinkoff/orderbook?ticker=${ticker}&class_code=${class_code}&depth=${depth}`),
+      fetch(`/api/tinkoff/trades?ticker=${ticker}&class_code=${class_code}&minutes=${minutes}`),
+    ]);
+    if(!obR.ok) throw new Error('Стакан: '+(await obR.text()));
+    if(!trR.ok) throw new Error('Лента: '+(await trR.text()));
+    renderOrderbook(await obR.json());
+    renderTrades(await trR.json());
+    setStatus(null);
+  }catch(e){setStatus('Ошибка: '+e.message,'error')}
+  finally{btn.disabled=false}
+}
+function renderOrderbook(ob){
+  const imb=ob.imbalance;
+  const imbColor = imb>0.1?'var(--green)':imb<-0.1?'var(--red)':'var(--text)';
+  $('ob-summary').innerHTML = `
+    <div class="chip">FIGI: <b>${ob.figi}</b></div>
+    <div class="chip">Mid: <b>${fmt(ob.mid_price)}</b></div>
+    <div class="chip">Спред: <b>${fmt(ob.spread)}</b></div>
+    <div class="chip">Bid: <b style="color:var(--green)">${fmtInt(ob.bid_total)}</b></div>
+    <div class="chip">Ask: <b style="color:var(--red)">${fmtInt(ob.ask_total)}</b></div>
+    <div class="chip">Дисбаланс: <b style="color:${imbColor}">${(imb*100).toFixed(1)}%</b></div>
+    <div class="chip">Плотностей: <b>${ob.densities.length}</b></div>`;
+  let h=`<table><thead><tr><th>Цена</th><th>Объём</th><th>R/avg</th><th>Флаг</th></tr></thead><tbody>`;
+  for(const lvl of [...ob.asks].reverse()){
+    h+=`<tr class="${lvl.is_density?'density ask-side':''}">
+      <td class="ask">${fmt(lvl.price)}</td><td>${fmtInt(lvl.quantity)}</td>
+      <td>${lvl.ratio??'—'}</td><td>${lvl.is_density?'🔴':''}</td></tr>`;}
+  h+=`<tr><td colspan="4" style="text-align:center;color:var(--muted);font-size:12px">
+      ─── спред ${fmt(ob.spread)} ───</td></tr>`;
+  for(const lvl of ob.bids){
+    h+=`<tr class="${lvl.is_density?'density':''}">
+      <td class="bid">${fmt(lvl.price)}</td><td>${fmtInt(lvl.quantity)}</td>
+      <td>${lvl.ratio??'—'}</td><td>${lvl.is_density?'🟢':''}</td></tr>`;}
+  h+='</tbody></table>';$('ob-table').innerHTML=h;
+}
+function renderTrades(tr){
+  const total=tr.buy_volume+tr.sell_volume||1;
+  const buyPct=(tr.buy_volume/total*100).toFixed(1);
+  const sellPct=(tr.sell_volume/total*100).toFixed(1);
+  const dc = tr.delta>0?'var(--green)':tr.delta<0?'var(--red)':'var(--text)';
+  $('tr-summary').innerHTML = `
+    <div class="chip">Сделок: <b>${fmtInt(tr.total_trades)}</b></div>
+    <div class="chip">Объём: <b>${fmtInt(tr.total_volume)}</b></div>
+    <div class="chip">VWAP: <b>${fmt(tr.vwap)}</b></div>
+    <div class="chip">Покупки: <b style="color:var(--green)">${fmtInt(tr.buy_volume)}</b> (${buyPct}%)
+      <span class="bar buy" style="width:${buyPct}px"></span></div>
+    <div class="chip">Продажи: <b style="color:var(--red)">${fmtInt(tr.sell_volume)}</b> (${sellPct}%)
+      <span class="bar sell" style="width:${sellPct}px"></span></div>
+    <div class="chip">Дельта: <b style="color:${dc}">${tr.delta>0?'+':''}${fmtInt(tr.delta)}</b></div>
+    <div class="chip">Принтов: <b>${tr.large_prints.length}</b></div>`;
+  let h=`<table><thead><tr><th>Время</th><th>Цена</th><th>Объём</th><th>Сторона</th></tr></thead><tbody>`;
+  if(tr.large_prints.length){
+    h+=`<tr><td colspan="4" style="color:var(--muted);font-size:11px;text-transform:uppercase">Крупные принты</td></tr>`;
+    for(const t of tr.large_prints){
+      const c = t.side==='buy'?'bid':t.side==='sell'?'ask':'';
+      h+=`<tr><td>${t.time.slice(11,19)}</td><td class="${c}">${fmt(t.price)}</td>
+        <td>${fmtInt(t.quantity)}</td><td class="${c}">${t.side}</td></tr>`;}
+    h+=`<tr><td colspan="4" style="color:var(--muted);font-size:11px;text-transform:uppercase;padding-top:10px">Последние сделки</td></tr>`;}
+  for(const t of [...tr.recent].reverse()){
+    const c = t.side==='buy'?'bid':t.side==='sell'?'ask':'';
+    h+=`<tr><td>${t.time.slice(11,19)}</td><td class="${c}">${fmt(t.price)}</td>
+      <td>${fmtInt(t.quantity)}</td><td class="${c}">${t.side}</td></tr>`;}
+  h+='</tbody></table>';$('tr-table').innerHTML=h;
+}
+$('load').addEventListener('click',load);
+$('ticker').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
+$('class_code').addEventListener('change',load);
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,147 @@
+import asyncio
+from asyncio import Queue
+from typing import AsyncIterable, AsyncIterator, Awaitable, Dict, List, Optional
+
+from grpc import RpcError, aio
+
+from t_tech.invest.grpc.marketdata import AsyncMarketDataStreamService
+from t_tech.invest.grpc.schemas import (
+    CandleInstrument,
+    MarketDataRequest,
+    MarketDataResponse,
+    SubscriptionAction,
+)
+from t_tech.invest.market_data_stream.market_data_stream_interface import (
+    BaseMarketDataStreamManager,
+)
+from t_tech.invest.market_data_stream.stream_managers import CandlesStreamManager
+
+
+class AsyncMarketDataStreamManager(
+    BaseMarketDataStreamManager["AsyncMarketDataStreamManager"]
+):
+    def __init__(self, market_data_stream: AsyncMarketDataStreamService):
+        self._market_data_stream_service: AsyncMarketDataStreamService = (
+            market_data_stream
+        )
+
+        self._requests: "Queue[MarketDataRequest]" = Queue()
+        self._stop_event = asyncio.Event()
+        self._market_data_stream: Optional[AsyncIterator[MarketDataResponse]] = None
+        self._backoff: float = 1.0
+        self._first_connect: bool = True
+        super().__init__()
+
+    def subscribe(self, market_data_request: MarketDataRequest) -> None:
+        self._requests.put_nowait(market_data_request)
+        self._update_state_from_request(market_data_request, subscribe=True)
+
+    def unsubscribe(self, market_data_request: MarketDataRequest) -> None:
+        self._requests.put_nowait(market_data_request)
+        self._update_state_from_request(market_data_request, subscribe=False)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    async def _get_request_generator(self) -> AsyncIterable[MarketDataRequest]:
+        while not self._stop_event.is_set() or not self._requests.empty():
+            try:
+                request = await asyncio.wait_for(self._requests.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            else:
+                yield request
+                self._requests.task_done()
+
+    def _enqueue_resubscribe_requests(self) -> None:
+        if self._active_candles:
+            by_flag: Dict[bool, List[CandleInstrument]] = {True: [], False: []}
+            for inst, flag in self._active_candles:
+                by_flag[flag].append(inst)
+
+            for flag, instruments in by_flag.items():
+                if not instruments:
+                    continue
+                candles_mgr = CandlesStreamManager(
+                    parent_manager=self,
+                    waiting_close=flag,
+                )
+                req = candles_mgr._get_request(  # type: ignore
+                    subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
+                    instruments=instruments,
+                )
+                self._requests.put_nowait(req)
+
+        if self._active_orderbook:
+            req = self._order_book_manager._get_request(  # type: ignore
+                subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
+                instruments=self._active_orderbook,
+            )
+            self._requests.put_nowait(req)
+
+        if self._active_trades:
+            req = self._trades_manager._get_request(  # type: ignore
+                subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
+                instruments=self._active_trades,
+            )
+            self._requests.put_nowait(req)
+
+        if self._active_info:
+            req = self._info_manager._get_request(  # type: ignore
+                subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
+                instruments=self._active_info,
+            )
+            self._requests.put_nowait(req)
+
+        if self._active_last_price:
+            req = self._last_price_manager._get_request(  # type: ignore
+                subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
+                instruments=self._active_last_price,
+            )
+            self._requests.put_nowait(req)
+
+    def __aiter__(self) -> "AsyncMarketDataStreamManager":
+        self._stop_event.clear()
+        self._backoff = 1.0
+        self._first_connect = True
+        self._market_data_stream = None
+        return self
+
+    def _open_new_stream(self) -> None:
+        self._market_data_stream = self._market_data_stream_service.market_data_stream(
+            self._get_request_generator()
+        ).__aiter__()
+
+    def __anext__(self) -> Awaitable[MarketDataResponse]:
+        return self._next_impl()
+
+    async def _next_impl(self) -> MarketDataResponse:
+        if self._stop_event.is_set():
+            raise StopAsyncIteration
+
+        while not self._stop_event.is_set():
+            if self._market_data_stream is None:
+                self._open_new_stream()
+                if not self._first_connect:
+                    self._enqueue_resubscribe_requests()
+                else:
+                    self._first_connect = False
+
+            try:
+                assert self._market_data_stream is not None
+                resp = await self._market_data_stream.__anext__()
+                self._backoff = 1.0
+                return resp
+
+            except (aio.AioRpcError, RpcError) as exc:
+                if self._stop_event.is_set():
+                    raise StopAsyncIteration from exc
+                await asyncio.sleep(self._backoff)
+                self._backoff = min(self._backoff * 2, 30.0)
+                self._market_data_stream = None
+                continue
+
+            except StopAsyncIteration:
+                raise
+
+        raise StopAsyncIteration

@@ -1,0 +1,64 @@
+Metadata-Version: 2.1
+Name: iprotopy
+Version: 0.3.0
+Summary: 
+Home-page: https://github.com/irusland/iprotopy
+License: MIT
+Author: Ruslan Sirazhetdinov
+Author-email: ruslansir@icloud.com
+Requires-Python: >=3.8,<4.0.0
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Dist: astor
+Requires-Dist: grpcio
+Requires-Dist: grpcio-tools
+Requires-Dist: mypy-protobuf
+Requires-Dist: proto-schema-parser
+Project-URL: Repository, https://github.com/irusland/iprotopy
+Description-Content-Type: text/markdown
+
+# iprotopy
+
+`iprotopy` is a Python project designed to generate source files from Protocol Buffers (protos) using the `PackageGenerator` class.
+
+##
+
+```python
+import logging
+from pathlib import Path
+
+from iprotopy import PackageGenerator
+
+logging.basicConfig(level=logging.DEBUG)
+
+
+if __name__ == '__main__':
+    generator = PackageGenerator()
+    base_dir = Path().absolute().parent
+
+    generator.generate_sources(
+        proto_dir=base_dir / 'protos',
+        out_dir=base_dir / 'package',
+    )
+
+```
+
+## Features
+
+- Generates source files from Protocol Buffers.
+- Packages the generated sources for easy usage.
+
+```sh
+pip install iprotopy
+
+```
+
+## Development
+### Installation
+
+

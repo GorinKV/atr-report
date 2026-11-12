@@ -1,0 +1,16 @@
+INVEST_GRPC_API = "invest-public-api.tbank.ru"
+INVEST_GRPC_API_SANDBOX = "sandbox-invest-public-api.tbank.ru"
+APP_VERSION = "1.51.0"
+APP_NAME = f"t-tech.invest-python-{APP_VERSION}"
+PACKAGE_NAME = f"t-tech.invest@{APP_VERSION.replace('-beta', '+')}"
+X_TRACKING_ID = "x-tracking-id"
+X_RATELIMIT_LIMIT = "x-ratelimit-limit"
+X_RATELIMIT_REMAINING = "x-ratelimit-remaining"
+X_RATELIMIT_RESET = "x-ratelimit-reset"
+MESSAGE = "message"
+MEGABYTE = 1024 * 1024
+MAX_RECEIVE_MESSAGE_LENGTH = 10 * MEGABYTE
+ERROR_HUB_DSN = "https://invest-piapi-errorhub@error-hub.tbank.ru/00000000"
+KEEPALIVE_TIME_MS = 1000
+KEEPALIVE_TIMEOUT_MS = 20000
+KEEPALIVE_MAX_PINGS = 120

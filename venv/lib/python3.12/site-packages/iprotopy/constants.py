@@ -1,0 +1,1 @@
+SOURCE_PACKAGE_NAME = 'iprotopy'
