@@ -14,6 +14,8 @@ from tinkoff_schemas import (
     DensityEvent, DensitiesHistoryResponse,
 )
 
+import density_store
+
 router = APIRouter(prefix="/api/tinkoff", tags=["tinkoff"])
 
 DENSITY_K = 3.0      # порог плотности по умолчанию (ratio относительно среднего)
@@ -151,7 +153,7 @@ async def orderbook_get(
             cur_seen.add(key)
             if key in prev_seen:
                 continue
-            _density_history.append({
+            ev = {
                 "ts": ts_now,
                 "ticker": tk,
                 "side": side,
@@ -159,7 +161,9 @@ async def orderbook_get(
                 "quantity": lvl.quantity,
                 "ratio": lvl.ratio,
                 "is_super": lvl.is_super,
-            })
+            }
+            _density_history.append(ev)   # in-memory: всегда (fallback)
+            density_store.enqueue_events([ev])  # в MariaDB, если настроена
     _density_seen[tk] = cur_seen
 
     best_bid = bids_raw[0][0] if bids_raw else 0.0
@@ -299,11 +303,16 @@ async def densities_history_get(
     очищается при рестарте). Новые сверху. Аналитика по дням/часам
     считается на клиенте из этого списка."""
     tk = ticker.upper() if ticker else None
-    events = [e for e in _density_history if not tk or e["ticker"] == tk]
-    events = events[-limit:]
+    limit_clamped = min(limit, 1000)
+    # История: сначала пробуем MariaDB (переживает рестарты),
+    # при недоступности БД — in-memory буфер.
+    events = density_store.load_events(tk, limit_clamped)
+    if not events:
+        mem = [e for e in _density_history if not tk or e["ticker"] == tk]
+        events = [DensityEvent(**e) for e in list(mem)[-limit_clamped:]][::-1]
     return DensitiesHistoryResponse(
         ticker=tk,
         generated_at=_msk_now().isoformat(timespec="seconds"),
         total=len(events),
-        events=[DensityEvent(**e) for e in reversed(events)],
+        events=events,
     )
