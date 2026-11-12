@@ -103,6 +103,8 @@ async def _run_report(req: ATRRequest) -> ATRResponse:
         raise HTTPException(422, f"Мало данных: {len(df)} свечей, нужно ≥ {req.atr_period + 1}.")
     atr = calculate_atr(df, req.atr_period)
     report_date = req.report_date or df.index[-1].date()
+    if not (df.index.date == report_date).any():
+        raise HTTPException(404, f"Нет свечей за {report_date}: выходной или нет торгов.")
     resp = build_report(df, atr, report_date)
     resp.ticker = req.ticker.upper()
     resp.atr_period = req.atr_period

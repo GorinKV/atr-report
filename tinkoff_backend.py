@@ -1,4 +1,6 @@
+import asyncio
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
@@ -28,33 +30,64 @@ def _to_float(q):
     return q.units + q.nano / 1e9
 
 
-def _find_figi(ticker, class_code):
+# Кэш ticker+class_code -> figi, чтобы не ходить в instruments API на каждый запрос.
+_FIGI_TTL = 3600.0  # сек; FIGI у инструмента не меняется, TTL — просто страховка
+_figi_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
+
+def _find_figi_sync(ticker, class_code):
     with Client(_token()) as client:
-        r = client.instruments.share_by(
-            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-            class_code=class_code,
-            id=ticker,
-        )
-        return r.instrument.figi
+        try:
+            r = client.instruments.share_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+                class_code=class_code,
+                id=ticker,
+            )
+            return r.instrument.figi
+        except Exception:
+            # Акции/ETF не нашлись — пробуем фьючерсы (класс SPBFUT и т.п.).
+            r = client.instruments.futures_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+                id=ticker,
+            )
+            return r.instrument.figi
+
+
+async def _find_figi(ticker, class_code):
+    key = (ticker, class_code)
+    cached = _figi_cache.get(key)
+    if cached and (time.monotonic() - cached[0]) < _FIGI_TTL:
+        return cached[1]
+    try:
+        figi = await asyncio.to_thread(_find_figi_sync, ticker, class_code)
+    except Exception:
+        # Не кэшируем ошибки (нет прав/нет инструмента) — повторим при следующем запросе.
+        raise
+    _figi_cache[key] = (time.monotonic(), figi)
+    return figi
 
 
 # ============================================================
 # Стакан
 # ============================================================
+def _get_order_book_sync(figi, depth):
+    with Client(_token()) as client:
+        # SDK 1.0.0: аргументы напрямую, без request=
+        return client.market_data.get_order_book(
+            instrument_id=figi,
+            depth=depth,
+        )
+
+
 @router.get("/orderbook", response_model=OrderBookResponse)
 async def orderbook_get(
     ticker: str = Query("SBER"),
     class_code: str = Query("TQBR"),
     depth: int = Query(20, ge=1, le=50),
 ) -> OrderBookResponse:
-    figi = _find_figi(ticker.upper(), class_code)
-
-    with Client(_token()) as client:
-        # SDK 1.0.0: аргументы напрямую, без request=
-        ob = client.market_data.get_order_book(
-            instrument_id=figi,
-            depth=depth,
-        )
+    # SDK синхронный (gRPC) — не блокируем event loop.
+    figi = await _find_figi(ticker.upper(), class_code)
+    ob = await asyncio.to_thread(_get_order_book_sync, figi, depth)
 
     bids_raw = [(_to_float(b.price), b.quantity) for b in ob.bids]
     asks_raw = [(_to_float(a.price), a.quantity) for a in ob.asks]
@@ -113,24 +146,29 @@ async def orderbook_get(
 # ============================================================
 # Лента
 # ============================================================
+def _get_last_trades_sync(figi, from_dt, to_dt):
+    with Client(_token()) as client:
+        # SDK 1.0.0: аргументы напрямую, без request= и без GetLastTradesRequest
+        return client.market_data.get_last_trades(
+            instrument_id=figi,
+            from_=from_dt,
+            to=to_dt,
+        )
+
+
 @router.get("/trades", response_model=TradesResponse)
 async def trades_get(
     ticker: str = Query("SBER"),
     class_code: str = Query("TQBR"),
     minutes: int = Query(60, ge=1, le=60),
 ) -> TradesResponse:
-    figi = _find_figi(ticker.upper(), class_code)
+    figi = await _find_figi(ticker.upper(), class_code)
 
     to_dt = datetime.now(timezone.utc)
     from_dt = to_dt - timedelta(minutes=minutes)
 
-    with Client(_token()) as client:
-        # SDK 1.0.0: аргументы напрямую, без request= и без GetLastTradesRequest
-        resp = client.market_data.get_last_trades(
-            instrument_id=figi,
-            from_=from_dt,
-            to=to_dt,
-        )
+    # SDK синхронный (gRPC) — не блокируем event loop.
+    resp = await asyncio.to_thread(_get_last_trades_sync, figi, from_dt, to_dt)
 
     trades = [
         {"time": t.time, "price": _to_float(t.price), "quantity": t.quantity}
