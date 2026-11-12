@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,13 +11,26 @@ from t_tech.invest.schemas import InstrumentIdType
 from tinkoff_schemas import (
     OrderBookRequest, OrderBookResponse, Level,
     TradesRequest, TradesResponse, TradePrint,
+    DensityEvent, DensitiesHistoryResponse,
 )
 
 router = APIRouter(prefix="/api/tinkoff", tags=["tinkoff"])
 
-DENSITY_K = 3.0
+DENSITY_K = 3.0      # порог плотности по умолчанию (ratio относительно среднего)
+SUPER_K = 2.0        # суперплотность: ratio >= порог * SUPER_K
 LARGE_PRINT_K = 5.0
 RECENT_N = 30
+DENSITY_HISTORY_MAX = 5000  # размер кольцевого буфера истории плотностей
+
+# История плотностей накапливается при каждом запросе стакана (в памяти,
+# чистится при рестарте сервиса). Записывается только когда фронтенд
+# опрашивает стакан — на странице есть автообновление раз в 15 с.
+_density_history: deque[dict] = deque(maxlen=DENSITY_HISTORY_MAX)
+_density_seen: dict[str, set] = {}  # ticker -> {(side, price), ...} плотности прошлого снимка
+
+
+def _msk_now():
+    return datetime.now(timezone(timedelta(hours=3)))
 
 
 def _token():
@@ -84,6 +98,8 @@ async def orderbook_get(
     ticker: str = Query("SBER"),
     class_code: str = Query("TQBR"),
     depth: int = Query(20, ge=1, le=50),
+    density_k: float = Query(DENSITY_K, ge=1.0, le=10.0,
+        description="Сила плотности: ratio уровня к среднему объёму"),
 ) -> OrderBookResponse:
     # SDK синхронный (gRPC) — не блокируем event loop.
     figi = await _find_figi(ticker.upper(), class_code)
@@ -94,19 +110,23 @@ async def orderbook_get(
 
     all_qty = [q for _, q in bids_raw] + [q for _, q in asks_raw]
     avg_qty = (sum(all_qty) / len(all_qty)) if all_qty else 0.0
-    threshold = DENSITY_K * avg_qty
+    threshold = density_k * avg_qty
+    super_threshold = density_k * SUPER_K * avg_qty
 
     densities = []
 
-    def to_levels(raw):
+    def to_levels(raw, side):
         out = []
         for price, qty in raw:
-            is_d = qty > threshold
             ratio = round(qty / avg_qty, 2) if avg_qty else None
+            is_d = ratio is not None and ratio > density_k
+            # Суперплотность — плотность, вдвое сильнее выбранного порога.
+            is_s = is_d and ratio is not None and qty >= super_threshold
             lvl = Level(
                 price=round(price, 6),
                 quantity=qty,
                 is_density=is_d,
+                is_super=is_s,
                 ratio=ratio,
             )
             out.append(lvl)
@@ -114,8 +134,33 @@ async def orderbook_get(
                 densities.append(lvl)
         return out
 
-    bids = to_levels(bids_raw)
-    asks = to_levels(asks_raw)
+    bids = to_levels(bids_raw, "bid")
+    asks = to_levels(asks_raw, "ask")
+
+    # В историю пишем только НОВЫЕ плотности (появился уровень цены) —
+    # иначе автообновление каждые 15 с завалит историю дублями.
+    tk = ticker.upper()
+    prev_seen = _density_seen.get(tk, set())
+    cur_seen = set()
+    ts_now = _msk_now().isoformat(timespec="seconds")
+    for side, lvls in (("bid", bids), ("ask", asks)):
+        for lvl in lvls:
+            if not lvl.is_density:
+                continue
+            key = (side, lvl.price)
+            cur_seen.add(key)
+            if key in prev_seen:
+                continue
+            _density_history.append({
+                "ts": ts_now,
+                "ticker": tk,
+                "side": side,
+                "price": lvl.price,
+                "quantity": lvl.quantity,
+                "ratio": lvl.ratio,
+                "is_super": lvl.is_super,
+            })
+    _density_seen[tk] = cur_seen
 
     best_bid = bids_raw[0][0] if bids_raw else 0.0
     best_ask = asks_raw[0][0] if asks_raw else 0.0
@@ -239,4 +284,26 @@ async def trades_get(
         vwap=round(vwap, 6),
         large_prints=large[:20],
         recent=recent,
+    )
+
+
+# ============================================================
+# История плотностей
+# ============================================================
+@router.get("/densities/history", response_model=DensitiesHistoryResponse)
+async def densities_history_get(
+    ticker: str | None = Query(None, description="Фильтр по тикеру; пусто = все"),
+    limit: int = Query(200, ge=1, le=1000),
+) -> DensitiesHistoryResponse:
+    """Накопленные события плотностей из стакана (в памяти сервиса,
+    очищается при рестарте). Новые сверху. Аналитика по дням/часам
+    считается на клиенте из этого списка."""
+    tk = ticker.upper() if ticker else None
+    events = [e for e in _density_history if not tk or e["ticker"] == tk]
+    events = events[-limit:]
+    return DensitiesHistoryResponse(
+        ticker=tk,
+        generated_at=_msk_now().isoformat(timespec="seconds"),
+        total=len(events),
+        events=[DensityEvent(**e) for e in reversed(events)],
     )

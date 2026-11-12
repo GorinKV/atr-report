@@ -2,6 +2,23 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
+class DensityEvent(BaseModel):
+    ts: str            # время фиксации (МСК, ISO)
+    ticker: str
+    side: str          # "bid" | "ask"
+    price: float
+    quantity: int
+    ratio: float       # qty / средний объём уровня
+    is_super: bool = False
+
+
+class DensitiesHistoryResponse(BaseModel):
+    ticker: Optional[str] = None
+    generated_at: str
+    total: int
+    events: List[DensityEvent]  # новые сверху
+
+
 class OrderBookRequest(BaseModel):
     ticker: str = Field(default="SBER")
     class_code: str = Field(default="TQBR")
@@ -12,6 +29,7 @@ class Level(BaseModel):
     price: float
     quantity: int
     is_density: bool = False
+    is_super: bool = False  # суперплотность: сила >= порога * 2
     ratio: Optional[float] = None
 
 
