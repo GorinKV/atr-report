@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 
 from atr_backend import router as atr_router
 from tinkoff_backend import router as tinkoff_router
+from moex_backend import router as moex_router
 import density_store
 import density_poller
 
@@ -13,6 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="MOEX ATR + Tinkoff Data")
 app.include_router(atr_router)
 app.include_router(tinkoff_router)
+app.include_router(moex_router)
 
 @app.on_event("startup")
 async def startup():
