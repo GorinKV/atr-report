@@ -65,7 +65,7 @@
     <div id="dens"></div>
   </div>
   <div class="panel">
-    <h2>Самые большие изменения цены <span class="meta">к пред. закрытию</span></h2>
+    <h2>Самые большие изменения цены <span class="meta">10 мин / с начала дня</span></h2>
     <div id="chg"></div>
   </div>
 </main>
@@ -110,15 +110,19 @@ function renderDens(rows){
   }
   $('dens').innerHTML=h+'</tbody></table>';
 }
+function pctCell(v){
+  if(v===null||v===undefined) return '<td>—</td>';
+  const cls=v>0.005?'up':v<-0.005?'down':'';
+  return `<td class="${cls}"><b>${v>0?'+':''}${v.toFixed(2)}%</b></td>`;
+}
 function renderChg(rows){
   if(!rows.length){$('chg').innerHTML='<p style="color:var(--muted);margin:0">Нет данных.</p>';return}
-  let h='<table><thead><tr><th>Тикер</th><th>Последняя</th><th>Пред. закр.</th><th>Δ %</th><th>Оборот</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>Тикер</th><th>Последняя</th><th>Δ 10 мин</th><th>Δ с начала дня</th><th>Оборот</th></tr></thead><tbody>';
   for(const r of rows){
-    const cls=r.change_pct>0?'up':r.change_pct<0?'down':'';
-    const pct=r.change_pct===null?'—':(r.change_pct>0?'+':'')+r.change_pct.toFixed(2)+'%';
     h+=`<tr><td class="ticker">${r.ticker}</td>
-      <td>${fmt(r.last)}</td><td>${fmt(r.prev)}</td>
-      <td class="${cls}"><b>${pct}</b></td>
+      <td>${fmt(r.last)}</td>
+      ${pctCell(r.change10_pct)}
+      ${pctCell(r.change_day_pct)}
       <td>${fmtBig(r.turnover)}</td></tr>`;
   }
   $('chg').innerHTML=h+'</tbody></table>';
