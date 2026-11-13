@@ -9,7 +9,6 @@
 
 Запись асинхронная (очередь + поток), чтобы не тормозить ответ API.
 """
-import asyncio
 import os
 import queue
 import threading
