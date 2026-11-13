@@ -155,6 +155,9 @@ def upsert_levels_sync(ticker: str, ts_db: str, levels: list[dict]) -> bool:
     """Обновляет/создаёт записи уровней одним батчем. True — успех."""
     if not levels:
         return True
+    # ts приходит в ISO ('...T...+03:00') — MySQL DATETIME требует
+    # 'YYYY-MM-DD HH:MM:SS' (та же конвертация, что и для событий).
+    ts_db = ts_db.replace("T", " ").split("+")[0]
     conn = None
     try:
         conn = _connect()
