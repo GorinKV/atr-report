@@ -40,6 +40,12 @@
   .ticker{font-weight:700}
   .gone{color:var(--muted)}
   .active{color:var(--green)}
+  .eaten-cell{white-space:nowrap}
+  .bar{display:inline-block;vertical-align:middle;width:52px;height:6px;border-radius:3px;
+       background:#232936;margin-left:6px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:3px}
+  .p-low i{background:var(--green)} .p-mid i{background:#d8a13a} .p-high i{background:var(--red)}
+  .pct{color:var(--muted);font-size:11px;margin-left:5px}
   .footer-meta{color:var(--muted);font-size:12px;margin-top:14px}
 </style>
 </head>
@@ -53,8 +59,11 @@
   <div id="status" class="status"></div>
   <div class="note">
     «Съедено» — оценка объёма, снятого с уровня (максимальный виденный размер минус текущий;
-    отмена заявки неотличима от сделки). «Сила» — отношение объёма уровня к среднему объёму
-    уровня стакана тикера. Активные уровни подсвечены зелёным.
+    отмена заявки неотличима от сделки). Доля съеденного (%) показывает давление на стенку:
+    до ~30% — стенку просто трогают, 30–70% — продают/покупают в неё, больше 70% — стенку
+    разбирают. «Удар» — разовое снижение остатка ≥10% (и ≥1% размера) между соседними
+    снимками стакана. «Сила» — отношение объёма уровня к среднему объёму уровня стакана
+    тикера. Активные уровни подсвечены зелёным.
   </div>
   <div class="grid">
     <div class="panel"><h2>Топ-25 по размеру (абсолютный)</h2><div id="by-size"></div></div>
@@ -94,20 +103,24 @@ async function load(){
 }
 function render(el, rows, isSize){
   if(!rows.length){el.innerHTML='<p style="color:var(--muted)">Пока нет данных — плотности копятся фоновым поллером во время торгов.</p>';return}
-  const sizeCol = isSize ? 'Размер' : 'R/avg';
-  let h=`<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>${sizeCol}</th>
-    <th>${isSize?'R/avg':'Размер'}</th><th>Появилась</th><th>Съедено</th><th>Статус</th></tr></thead><tbody>`;
+  let h=`<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th>
+    <th>Съедено</th><th>R/avg</th><th>Появилась</th><th>Статус</th></tr></thead><tbody>`;
   for(const r of rows){
     const sideCls = r.side==='bid'?'bid':'ask';
+    const pct = r.eaten_pct||0;
+    const pCls = pct>70?'p-high':pct>30?'p-mid':'p-low';
+    const pctTxt = pct>0 ? `<span class="pct">${pct.toFixed(0)}%</span>` : '';
+    const bar = pct>0 ? `<span class="bar ${pCls}"><i style="width:${Math.min(pct,100)}%"></i></span>` : '';
+    const stCls = r.active?'active':'gone';
     h+=`<tr class="${r.is_super?'super':''}">
       <td class="ticker">${r.ticker}</td>
       <td class="${sideCls}">${r.side==='bid'?'🟢 bid':'🔴 ask'}</td>
       <td class="${sideCls}">${fmt(r.price)}</td>
-      <td>${isSize?'<b>'+fmtInt(r.size)+'</b>':fmtInt(r.size)}</td>
-      <td>${isSize?fmt(r.ratio,2):'<b>'+fmt(r.ratio,2)+'</b>'}</td>
+      <td><b>${fmtInt(r.size)}</b></td>
+      <td class="eaten-cell">${fmtEaten(r.eaten)}${pctTxt}${bar}</td>
+      <td>${fmt(r.ratio,2)}</td>
       <td>${fmtTs(r.first_ts)}</td>
-      <td>${fmtEaten(r.eaten)}</td>
-      <td class="${r.active?'active':'gone'}">${r.is_super?'💥 ':''}${r.active?'активна':'ушла'}</td>
+      <td class="${stCls}">${r.is_super?'💥 ':''}${r.status||(r.active?'активна':'ушла')}</td>
     </tr>`;
   }
   h+='</tbody></table>';

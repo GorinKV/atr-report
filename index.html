@@ -36,6 +36,12 @@
   .up{color:var(--green)} .down{color:var(--red)}
   .super{box-shadow:inset 2px 0 0 var(--accent);font-weight:600}
   .gone{color:var(--muted)} .active{color:var(--green)}
+  .eaten-cell{white-space:nowrap}
+  .bar{display:inline-block;vertical-align:middle;width:44px;height:6px;border-radius:3px;
+       background:#232936;margin-left:6px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:3px}
+  .p-low i{background:var(--green)} .p-mid i{background:#d8a13a} .p-high i{background:var(--red)}
+  .pct{color:var(--muted);font-size:11px;margin-left:5px}
   .status{padding:8px 14px;border-radius:6px;margin:12px 24px 0;font-size:13px;display:none}
   .status.error{display:block;background:#2a1416;color:var(--red);border:1px solid #4a1f22}
   .meta{color:var(--muted);font-size:12px}
@@ -86,17 +92,21 @@ async function jget(url){const r=await fetch(url);if(!r.ok){const t=await r.text
 
 function renderDens(rows){
   if(!rows.length){$('dens').innerHTML='<p style="color:var(--muted);margin:0">Пока нет данных — копятся поллером во время торгов.</p>';return}
-  let h='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th><th>R/avg</th><th>Съедено</th><th>Статус</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th><th>Съедено</th><th>R/avg</th><th>Статус</th></tr></thead><tbody>';
   for(const r of rows){
     const cls=r.side==='bid'?'bid':'ask';
+    const pct=r.eaten_pct||0;
+    const pCls=pct>70?'p-high':pct>30?'p-mid':'p-low';
+    const pctTxt=pct>0?`<span class="pct">${pct.toFixed(0)}%</span>`:'';
+    const bar=pct>0?`<span class="bar ${pCls}"><i style="width:${Math.min(pct,100)}%"></i></span>`:'';
     h+=`<tr class="${r.is_super?'super':''}">
       <td class="ticker">${r.ticker}</td>
       <td class="${cls}">${r.side==='bid'?'🟢':'🔴'}</td>
       <td class="${cls}">${fmt(r.price)}</td>
       <td><b>${fmtInt(r.size)}</b></td>
+      <td class="eaten-cell">${fmtEaten(r.eaten)}${pctTxt}${bar}</td>
       <td>${fmt(r.ratio)}</td>
-      <td>${fmtEaten(r.eaten)}</td>
-      <td class="${r.active?'active':'gone'}">${r.is_super?'💥 ':''}${r.active?'активна':'ушла'}</td></tr>`;
+      <td class="${r.active?'active':'gone'}">${r.is_super?'💥 ':''}${r.status||(r.active?'активна':'ушла')}</td></tr>`;
   }
   $('dens').innerHTML=h+'</tbody></table>';
 }

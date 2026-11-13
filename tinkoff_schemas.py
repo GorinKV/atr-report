@@ -28,8 +28,12 @@ class DensityLevelTop(BaseModel):
     first_ts: str        # время появления (МСК, ISO)
     last_ts: str         # когда уровень последний раз видели (МСК)
     eaten: int           # съедено с уровня, оценка: max(size) - текущий
+    eaten_pct: float = 0 # съедено в % от размера — анализ пары размер/съедено
+    hits: int = 0        # сколько «ударов» выдержал (существенных снижений остатка)
+    status: str = ""     # активна / держится, N ударов / полностью съедена / ушла…
     is_super: bool = False
     active: bool = False # уровень сейчас в стакане
+    gone: bool = False   # уровень исчез из стакана
 
 
 class TopDensitiesResponse(BaseModel):

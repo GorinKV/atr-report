@@ -42,8 +42,15 @@ CREATE TABLE IF NOT EXISTS density_events (
 # Состояние уровней плотностей: живёт, пока уровень существует в стакане.
 # max_qty — максимум виденного объёма, last_qty — текущий; разница =
 # съеденный с уровня объём (оценка: отмена заявки неотличима от сделки).
+# v2 — расширение первой таблицы density_levels:
+#   hits  — сколько «ударов» выдержал уровень (существенных снижений
+#           остатка между соседними снимками стакана);
+#   gone  — уровень исчез из стакана (last_qty при этом НЕ обнуляется,
+#           чтобы отличать «полностью съедена» от «снята с объёмом»).
+# Новая таблица, а не ALTER: у пользователя БД нет права ALTER — миграция
+# делается переносом строк (CREATE + INSERT SELECT) в ensure_levels_sync().
 _LEVELS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS density_levels (
+CREATE TABLE IF NOT EXISTS density_levels_v2 (
     id        BIGINT AUTO_INCREMENT PRIMARY KEY,
     ticker    VARCHAR(16) NOT NULL,
     side      ENUM('bid','ask') NOT NULL,
@@ -54,12 +61,50 @@ CREATE TABLE IF NOT EXISTS density_levels (
     last_qty  BIGINT NOT NULL,
     max_ratio FLOAT NOT NULL,
     is_super  BOOLEAN NOT NULL DEFAULT 0,
+    hits      INT NOT NULL DEFAULT 0,
+    gone      BOOLEAN NOT NULL DEFAULT 0,
     UNIQUE KEY uq_level (ticker, side, price),
     INDEX idx_max_qty (max_qty),
     INDEX idx_max_ratio (max_ratio),
     INDEX idx_last_ts (last_ts)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
+
+# «Удар» по уровню: остаток упал за один шаг минимум на 10% текущего
+# остатка И минимум на 1% максимального размера уровня (иначе мелкий
+# дребезг котировок считался бы ударами).
+_HIT_IF_SQL = ("hits = hits + IF(VALUES(last_qty) < last_qty * 0.9"
+               " AND last_qty - VALUES(last_qty) >= GREATEST(max_qty * 0.01, 1), 1, 0)")
+
+_levels_ready = False  # ensure-миграция выполнена в этом процессе
+
+
+def ensure_levels_sync(conn) -> None:
+    """Создаёт density_levels_v2 и один раз переносит данные из v1.
+
+    Право ALTER у atr_report нет, поэтому миграция — копия строк
+    (CREATE + INSERT IGNORE SELECT), дубликаты пропускаются по UNIQUE.
+    В v1 уровни, исчезнувшие из стакана, обнулялись (last_qty=0) —
+    при переносе такие помечаются gone=1, «съедено» для них равно max.
+    """
+    global _levels_ready
+    if _levels_ready:
+        return
+    with conn.cursor() as c:
+        c.execute(_LEVELS_TABLE_SQL)
+        c.execute("SHOW TABLES LIKE 'density_levels'")
+        if c.fetchone():
+            c.execute(
+                "INSERT IGNORE INTO density_levels_v2"
+                " (ticker, side, price, first_ts, last_ts, max_qty, last_qty,"
+                "  max_ratio, is_super, hits, gone)"
+                " SELECT ticker, side, price, first_ts, last_ts, max_qty, last_qty,"
+                "        max_ratio, is_super, 0, (last_qty = 0)"
+                " FROM density_levels")
+        c.execute("SELECT COUNT(*) FROM density_levels_v2")
+        n = c.fetchone()[0]
+    log.info("density_store: таблица уровней v2 готова, строк: %s", n)
+    _levels_ready = True
 
 
 def _db_conf():
@@ -152,7 +197,12 @@ def enqueue_events(events: list[dict]):
 # Состояние уровней плотностей (для топа по размеру и по силе)
 # ============================================================
 def upsert_levels_sync(ticker: str, ts_db: str, levels: list[dict]) -> bool:
-    """Обновляет/создаёт записи уровней одним батчем. True — успех."""
+    """Обновляет/создаёт записи уровней одним батчем. True — успех.
+
+    Удары: в ON DUPLICATE KEY UPDATE строка `hits` стоит ДО присвоения
+    last_qty — MySQL вычисляет присвоения по порядку, поэтому там виден
+    СТАРЫЙ остаток; сравнение с VALUES(last_qty) даёт факт снижения.
+    """
     if not levels:
         return True
     # ts приходит в ISO ('...T...+03:00') — MySQL DATETIME требует
@@ -163,18 +213,22 @@ def upsert_levels_sync(ticker: str, ts_db: str, levels: list[dict]) -> bool:
         conn = _connect()
         if conn is None:
             return False
+        ensure_levels_sync(conn)
         with conn.cursor() as c:
-            c.execute(_LEVELS_TABLE_SQL)
             c.executemany(
-                "INSERT INTO density_levels"
-                " (ticker, side, price, first_ts, last_ts, max_qty, last_qty, max_ratio, is_super)"
+                "INSERT INTO density_levels_v2"
+                " (ticker, side, price, first_ts, last_ts, max_qty, last_qty,"
+                "  max_ratio, is_super, hits, gone)"
                 " VALUES (%(ticker)s, %(side)s, %(price)s, %(ts)s, %(ts)s,"
-                "         %(quantity)s, %(quantity)s, %(ratio)s, %(is_super)s)"
-                " ON DUPLICATE KEY UPDATE last_ts = VALUES(last_ts),"
-                " last_qty = VALUES(last_qty),"
-                " max_qty = GREATEST(max_qty, VALUES(max_qty)),"
-                " max_ratio = GREATEST(max_ratio, VALUES(max_ratio)),"
-                " is_super = VALUES(is_super)",
+                "         %(quantity)s, %(quantity)s, %(ratio)s, %(is_super)s, 0, 0)"
+                " ON DUPLICATE KEY UPDATE"
+                "  last_ts = VALUES(last_ts),"
+                "  " + _HIT_IF_SQL + ","
+                "  max_qty = GREATEST(max_qty, VALUES(max_qty)),"
+                "  max_ratio = GREATEST(max_ratio, VALUES(max_ratio)),"
+                "  is_super = is_super OR VALUES(is_super),"
+                "  gone = 0,"  # уровень снова в стакане — не «ушёл»
+                "  last_qty = VALUES(last_qty)",
                 [{"ticker": ticker, "ts": ts_db, **lvl} for lvl in levels])
         return True
     except Exception as e:
@@ -187,7 +241,12 @@ def upsert_levels_sync(ticker: str, ts_db: str, levels: list[dict]) -> bool:
 
 
 def mark_levels_gone_sync(ticker: str, gone_keys: list[tuple[str, float]]):
-    """Уровни исчезли из стакана — съеденным считается весь максимальный объём."""
+    """Уровни исчезли из стакана: gone=1, последний остаток сохраняем.
+
+    last_qty намеренно НЕ обнуляется: если остаток к моменту исчезновения
+    был ~0 — уровень «полностью съеден»; если большим — его сняли/переставили,
+    и съеденным честно считается только то, что реально сняли до ухода.
+    """
     if not gone_keys:
         return
     conn = None
@@ -196,8 +255,9 @@ def mark_levels_gone_sync(ticker: str, gone_keys: list[tuple[str, float]]):
         if conn is None:
             return
         with conn.cursor() as c:
+            ensure_levels_sync(conn)
             for side, price in gone_keys:
-                c.execute("UPDATE density_levels SET last_qty = 0"
+                c.execute("UPDATE density_levels_v2 SET gone = 1"
                           " WHERE ticker = %s AND side = %s AND price = %s",
                           (ticker, side, price))
     except Exception as e:
@@ -216,27 +276,59 @@ def top_levels_sync(limit: int = 25):
         conn = _connect()
         if conn is None:
             return [], [], False
+        ensure_levels_sync(conn)
         base = ("SELECT ticker, side, price, first_ts, last_ts,"
-                " max_qty, last_qty, max_ratio, is_super FROM density_levels")
+                " max_qty, last_qty, max_ratio, is_super, hits, gone"
+                " FROM density_levels_v2")
         with conn.cursor() as c:
-            c.execute(_LEVELS_TABLE_SQL)
             c.execute(base + " ORDER BY max_qty DESC LIMIT %s", (limit,))
             rows_size = c.fetchall()
             c.execute(base + " ORDER BY max_ratio DESC LIMIT %s", (limit,))
             rows_ratio = c.fetchall()
         now_naive = datetime.now(MSK).replace(tzinfo=None)
 
+        def hits_word(n: int) -> str:
+            if n % 10 == 1 and n % 100 != 11: return "удар"
+            if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14): return "удара"
+            return "ударов"
+
         def to_model(r):
-            ticker, side, price, fts, lts, maxq, lastq, ratio, sup = r
+            (ticker, side, price, fts, lts, maxq, lastq,
+             ratio, sup, hits, gone) = r
             fts, lts = fts.replace(tzinfo=MSK), lts.replace(tzinfo=MSK)
+            maxq, lastq, hits = int(maxq), int(lastq), int(hits)
+            eaten = max(maxq - lastq, 0)
+            eaten_pct = round(eaten / maxq * 100, 1) if maxq > 0 else 0.0
+            active = (not gone) and (
+                now_naive - lts.replace(tzinfo=None)).total_seconds() < 45
+            # Статус: анализ пары «размер / съедено» + число ударов.
+            #   активна             — уровень сейчас в стакане;
+            #   выдержала N ударов  — остаток заметно проседал N раз, но
+            #                         уровень стоит (главное для плотности);
+            #   полностью съедена   — к уходу из стакана съедено ≥90%;
+            #   ушла                — исчезла с большим остатком
+            #                         (снята/переставлена, а не съедена).
+            if active:
+                status = "активна"
+                if hits >= 2:
+                    status = f"держится, {hits} {hits_word(hits)}"
+                elif hits == 1:
+                    status = "держится после удара"
+            elif eaten_pct >= 90:
+                status = "полностью съедена"
+            elif hits >= 2:
+                status = f"выдержала {hits} {hits_word(hits)} и ушла"
+            else:
+                status = "ушла"
             return {
                 "ticker": ticker, "side": side, "price": float(price),
-                "size": int(maxq), "ratio": round(float(ratio), 2),
+                "size": maxq, "ratio": round(float(ratio), 2),
                 "first_ts": fts.isoformat(timespec="seconds"),
                 "last_ts": lts.isoformat(timespec="seconds"),
-                "eaten": max(int(maxq) - int(lastq), 0),
-                "is_super": bool(sup),
-                "active": (now_naive - lts.replace(tzinfo=None)).total_seconds() < 45,
+                "eaten": eaten, "eaten_pct": eaten_pct,
+                "hits": hits, "gone": bool(gone),
+                "is_super": bool(sup), "active": active,
+                "status": status,
             }
 
         return ([to_model(r) for r in rows_size],
@@ -252,7 +344,8 @@ def top_levels_sync(limit: int = 25):
 
 # ============================================================
 # Чтение истории из БД
-# ============================================================def load_events(ticker: str | None, limit: int) -> list[DensityEvent]:
+# ============================================================
+def load_events(ticker: str | None, limit: int) -> list[DensityEvent]:
     """Читает события из БД (новые сверху); при недоступности БД возвращает []."""
     conn = None
     try:
