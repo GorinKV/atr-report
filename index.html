@@ -2,60 +2,132 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<title>MOEX · ATR &amp; Tinkoff</title>
+<title>MOEX · Дашборд</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root{--bg:#0f1115;--panel:#161a22;--border:#242a36;--text:#d7dbe3;--muted:#7b8494;
         --accent:#4f9eff;--green:#3fbf7f;--red:#e05b5b;}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
-       background:var(--bg);color:var(--text);font-size:14px;
-       display:flex;flex-direction:column;min-height:100vh}
-  header{padding:20px 24px;border-bottom:1px solid var(--border)}
-  header h1{margin:0;font-size:20px;font-weight:600}
-  header .sub{color:var(--muted);font-size:13px;margin-top:4px}
-  main{flex:1;padding:28px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
-       gap:20px;max-width:900px;width:100%;margin:0 auto}
-  a.tile{display:block;background:var(--panel);border:1px solid var(--border);border-radius:10px;
-         padding:20px 22px;text-decoration:none;color:var(--text);transition:border-color .15s,transform .15s}
-  a.tile:hover{border-color:var(--accent);transform:translateY(-2px)}
-  .tile h2{margin:0 0 8px;font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px}
-  .tile p{margin:0;color:var(--muted);font-size:13px;line-height:1.5}
-  .tag{font-size:10px;text-transform:uppercase;letter-spacing:.5px;padding:2px 8px;border-radius:4px}
-  .tag.atr{background:#14202a;color:var(--accent);border:1px solid #1f3a4a}
-  .tag.tink{background:#14261a;color:var(--green);border:1px solid #1f4a2e}
-  footer{padding:14px 24px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}
-  footer a{color:var(--accent);text-decoration:none}
+       background:var(--bg);color:var(--text);font-size:14px}
+  header{padding:14px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{margin:0;font-size:18px;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  header .links{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}
+  a.nav{background:var(--panel);border:1px solid var(--border);border-radius:6px;
+        padding:7px 14px;color:var(--text);text-decoration:none;font-size:13px}
+  a.nav:hover{border-color:var(--accent)}
+  a.nav b{color:var(--accent);font-weight:600}
+  main{padding:16px 24px 40px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:1000px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+  .panel h2{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--muted);
+            text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
+  .panel h2 a{color:var(--accent);text-decoration:none;font-size:11px;text-transform:none;letter-spacing:0;margin-left:auto}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+  thead th{text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);color:var(--muted);
+           font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  thead th:first-child{text-align:left}
+  tbody td{padding:5px 8px;border-bottom:1px solid #1a1f29;text-align:right}
+  tbody td:first-child{text-align:left}
+  tbody tr:hover{background:#141821}
+  .ticker{font-weight:700}
+  .bid{color:var(--green)} .ask{color:var(--red)}
+  .up{color:var(--green)} .down{color:var(--red)}
+  .super{box-shadow:inset 2px 0 0 var(--accent);font-weight:600}
+  .gone{color:var(--muted)} .active{color:var(--green)}
+  .status{padding:8px 14px;border-radius:6px;margin:12px 24px 0;font-size:13px;display:none}
+  .status.error{display:block;background:#2a1416;color:var(--red);border:1px solid #4a1f22}
+  .meta{color:var(--muted);font-size:12px}
 </style>
 </head>
 <body>
 <header>
-  <h1>MOEX · ATR &amp; Tinkoff</h1>
-  <div class="sub">Аналитика волатильности и биржевой ленты</div>
+  <h1>MOEX · Дашборд</h1>
+  <span class="sub">единая точка входа · обновление 15 с</span>
+  <nav class="links">
+    <a class="nav" href="/atr.html"><b>ATR</b> всплески и супервсплески</a>
+    <a class="nav" href="/tinkoff.html"><b>Стакан</b> плотности и лента</a>
+    <a class="nav" href="/densities.html"><b>Топ плотностей</b> все тикеры</a>
+    <a class="nav" href="/docs"><b>API</b> swagger</a>
+  </nav>
 </header>
+<div id="status" class="status"></div>
 <main>
-  <a class="tile" href="/atr.html">
-    <h2><span class="tag atr">MOEX ISS</span> Отчёт ATR</h2>
-    <p>10-минутные свечи Московской Биржи: сравнение Range / ATR,
-       всплески волатильности ▲▼ и супервсплески 💥 с подсветкой
-       направления, распределение за день.</p>
-  </a>
-  <a class="tile" href="/tinkoff.html">
-    <h2><span class="tag tink">T-Invest API</span> Стакан и плотности</h2>
-    <p>Стакан заявок с поиском плотностей 🔴🟢 и суперплотностей 💥
-       (ползунок силы), дисбаланс bid/ask и лента сделок: VWAP,
-       дельта, крупные принты, история плотностей.</p>
-  </a>
-  <a class="tile" href="/densities.html">
-    <h2><span class="tag tink">T-Invest API</span> Топ плотностей</h2>
-    <p>Самые большие 25 плотностей по всем тикерам из фонового
-       поллера: размер и сила (R/avg), время появления, съеденный
-       с уровня объём. Данные копятся в MariaDB.</p>
-  </a>
+  <div class="panel">
+    <h2>Крупные плотности сейчас <a href="/densities.html">полный топ →</a></h2>
+    <div id="dens"></div>
+  </div>
+  <div class="panel">
+    <h2>Самые большие изменения цены <span class="meta">к пред. закрытию</span></h2>
+    <div id="chg"></div>
+  </div>
 </main>
-<footer>
-  API: <a href="/docs">/docs</a> · <a href="/api/atr/report?ticker=SBER">/api/atr/report</a> ·
-  <a href="/api/tinkoff/orderbook?ticker=SBER">/api/tinkoff/orderbook</a>
-</footer>
+<script>
+const $=id=>document.getElementById(id);
+const statusEl=$('status');
+function setStatus(m){if(!m){statusEl.className='status';statusEl.textContent='';return}
+  statusEl.className='status error';statusEl.textContent=m}
+function fmt(n,d=2){return n===null||n===undefined?'—':Number(n).toFixed(d)}
+function fmtInt(n){return n===null||n===undefined?'—':Number(n).toLocaleString('ru-RU')}
+function fmtBig(n){
+  if(n===null||n===undefined) return '—';
+  return n>=1e9 ? (n/1e9).toFixed(1)+' млрд' : n>=1e6 ? (n/1e6).toFixed(1)+' млн' : fmtInt(n);
+}
+function fmtEaten(n){
+  if(!n) return '—';
+  return n>=1e6 ? (n/1e6).toFixed(1)+' млн' : n>=1e3 ? (n/1e3).toFixed(1)+' тыс' : fmtInt(n);
+}
+function fmtTs(ts){
+  const today=new Date().toISOString().slice(0,10);
+  return ts.slice(0,10)===today ? ts.slice(11,19) : ts.slice(5,16).replace('T',' ');
+}
+async function jget(url){const r=await fetch(url);if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}throw new Error(m)}return r.json()}
+
+function renderDens(rows){
+  if(!rows.length){$('dens').innerHTML='<p style="color:var(--muted);margin:0">Пока нет данных — копятся поллером во время торгов.</p>';return}
+  let h='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th><th>R/avg</th><th>Съедено</th><th>Статус</th></tr></thead><tbody>';
+  for(const r of rows){
+    const cls=r.side==='bid'?'bid':'ask';
+    h+=`<tr class="${r.is_super?'super':''}">
+      <td class="ticker">${r.ticker}</td>
+      <td class="${cls}">${r.side==='bid'?'🟢':'🔴'}</td>
+      <td class="${cls}">${fmt(r.price)}</td>
+      <td><b>${fmtInt(r.size)}</b></td>
+      <td>${fmt(r.ratio)}</td>
+      <td>${fmtEaten(r.eaten)}</td>
+      <td class="${r.active?'active':'gone'}">${r.is_super?'💥 ':''}${r.active?'активна':'ушла'}</td></tr>`;
+  }
+  $('dens').innerHTML=h+'</tbody></table>';
+}
+function renderChg(rows){
+  if(!rows.length){$('chg').innerHTML='<p style="color:var(--muted);margin:0">Нет данных.</p>';return}
+  let h='<table><thead><tr><th>Тикер</th><th>Последняя</th><th>Пред. закр.</th><th>Δ %</th><th>Оборот</th></tr></thead><tbody>';
+  for(const r of rows){
+    const cls=r.change_pct>0?'up':r.change_pct<0?'down':'';
+    const pct=r.change_pct===null?'—':(r.change_pct>0?'+':'')+r.change_pct.toFixed(2)+'%';
+    h+=`<tr><td class="ticker">${r.ticker}</td>
+      <td>${fmt(r.last)}</td><td>${fmt(r.prev)}</td>
+      <td class="${cls}"><b>${pct}</b></td>
+      <td>${fmtBig(r.turnover)}</td></tr>`;
+  }
+  $('chg').innerHTML=h+'</tbody></table>';
+}
+async function load(){
+  try{
+    const [top, chg] = await Promise.allSettled([
+      jget('/api/tinkoff/densities/top?limit=10'),
+      jget('/api/moex/changes?limit=10'),
+    ]);
+    if(top.status==='fulfilled') renderDens(top.value.by_size);
+    if(chg.status==='fulfilled') renderChg(chg.value.items);
+    const errs=[top,chg].filter(x=>x.status==='rejected').map(x=>x.reason.message);
+    setStatus(errs.length?('Частично: '+errs.join(' | ')):null);
+  }catch(e){setStatus('Ошибка: '+e.message)}
+}
+$('status') && load();
+setInterval(()=>{if(document.visibilityState==='visible')load()},15000);
+load();
+</script>
 </body>
 </html>
