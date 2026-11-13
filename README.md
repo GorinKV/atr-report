@@ -1,3 +1,5 @@
+![CI](https://github.com/GorinKV/atr-report/actions/workflows/ci.yml/badge.svg)
+
 # 📈 ATR Report Service
 
 Сервис для аналитики волатильности и генерации отчетов по индикатору **ATR (Average True Range)** на базе данных Московской Биржи (MOEX) и Tinkoff Invest API.
