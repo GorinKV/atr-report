@@ -20,6 +20,7 @@ app.include_router(moex_router)
 async def startup():
     # Фоновый писатель истории плотностей в MariaDB (если настроена).
     density_store.start_worker()
+    density_store.start_cleanup_loop()  # ночная чистка: топ-15 уровней, топ-5 событий
     # Фоновый опрос стакана по списку из poll_tickers.txt.
     density_poller.start()
 

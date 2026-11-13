@@ -14,6 +14,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pymysql
@@ -340,6 +341,107 @@ def top_levels_sync(limit: int = 25):
         if conn:
             try: conn.close()
             except Exception: pass
+
+
+# ============================================================
+# Ночная очистка: за прошлый день остаются только лучшие уровни
+# и крупнейшие события
+# ============================================================
+KEEP_LEVELS = 15  # самые крутые уровни плотностей
+KEEP_EVENTS = 5   # топ-5 крупнейших событий (движений) за прошлый день
+
+_last_cleanup_date = None  # дата последней ночной очистки (в этом процессе)
+_cleanup_started = False   # флаг запуска потока ночной очистки
+
+
+def cleanup_nightly_sync() -> str:
+    """Чистка истории: события за прошлый день — только топ-5 по объёму
+    (более старые дни удаляются совсем), уровни — топ-15 по крутости
+    (супер в приоритете, затем размер и сила; очки = сумма мест в двух
+    топах). Безопасно запускать повторно в один день.
+    """
+    global _last_cleanup_date
+    conn = None
+    today = datetime.now(MSK).date()
+    try:
+        conn = _connect()
+        if conn is None:
+            return "БД недоступна"
+        ensure_levels_sync(conn)
+        kept_events = 0
+        with conn.cursor() as c:
+            # --- события: топ-5 крупнейших за прошлый день, остальное — удалить
+            c.execute("SELECT id FROM density_events WHERE ts < %s"
+                      " ORDER BY quantity DESC, id DESC LIMIT %s",
+                      (today, KEEP_EVENTS))
+            ev_keep = [r[0] for r in c.fetchall()]
+            if ev_keep:
+                marks = ",".join(["%s"] * len(ev_keep))
+                c.execute(f"DELETE FROM density_events WHERE ts < %s AND id NOT IN ({marks})",
+                          [today, *ev_keep])
+            else:
+                c.execute("DELETE FROM density_events WHERE ts < %s", (today,))
+            kept_events = len(ev_keep)
+
+            # --- уровни: топ-15 по крутости = сумма мест в топах по размеру и силе
+            c.execute("SELECT id FROM density_levels_v2 ORDER BY max_qty DESC LIMIT 30")
+            by_qty = [r[0] for r in c.fetchall()]
+            c.execute("SELECT id FROM density_levels_v2 ORDER BY max_ratio DESC LIMIT 30")
+            by_ratio = [r[0] for r in c.fetchall()]
+            score: dict[int, int] = {}
+            for rank, _id in enumerate(by_qty):
+                score[_id] = score.get(_id, 0) + rank
+            for rank, _id in enumerate(by_ratio):
+                score[_id] = score.get(_id, 0) + rank
+            lvl_keep = sorted(score, key=score.get)[:KEEP_LEVELS]
+            if lvl_keep:
+                marks = ",".join(["%s"] * len(lvl_keep))
+                c.execute(f"DELETE FROM density_levels_v2 WHERE id NOT IN ({marks})",
+                          lvl_keep)
+            else:
+                c.execute("DELETE FROM density_levels_v2")
+        _last_cleanup_date = today
+        msg = (f"очистка: уровней осталось {len(lvl_keep)},"
+               f" событий прошлого дня — топ-{kept_events}")
+        log.info("density_store: %s", msg)
+        return msg
+    except Exception as e:
+        log.warning("density_store: ночная очистка не удалась: %s: %s",
+                    type(e).__name__, e)
+        return f"ошибка: {e}"
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def _cleanup_loop():
+    """Спит до 00:20 МСК, чистит, снова спит. Если сервис перезапущен
+    ночью (до 06:00) и очистка за сегодня ещё не делалась — наверстает
+    сразу при старте."""
+    global _last_cleanup_date
+    while True:
+        now = datetime.now(MSK).replace(tzinfo=None)
+        if now.hour < 6 and _last_cleanup_date != now.date():
+            cleanup_nightly_sync()
+            _last_cleanup_date = now.date()
+            continue  # пересчитать следующий таргет уже с датой сегодня
+        target = now.replace(hour=0, minute=20, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        time.sleep(max(60, (target - now).total_seconds()))
+
+
+def start_cleanup_loop():
+    """Запустить ночной чистильщик (однократно)."""
+    global _cleanup_started
+    if _cleanup_started:
+        return
+    if _db_conf() is None:
+        return
+    _cleanup_started = True
+    t = threading.Thread(target=_cleanup_loop, name="density-night-cleanup", daemon=True)
+    t.start()
 
 
 # ============================================================
