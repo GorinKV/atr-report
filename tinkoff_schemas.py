@@ -1,5 +1,5 @@
+
 from pydantic import BaseModel, Field
-from typing import Optional, List
 
 
 class DensityEvent(BaseModel):
@@ -13,10 +13,10 @@ class DensityEvent(BaseModel):
 
 
 class DensitiesHistoryResponse(BaseModel):
-    ticker: Optional[str] = None
+    ticker: str | None = None
     generated_at: str
     total: int
-    events: List[DensityEvent]  # новые сверху
+    events: list[DensityEvent]  # новые сверху
 
 
 class DensityLevelTop(BaseModel):
@@ -39,8 +39,8 @@ class DensityLevelTop(BaseModel):
 class TopDensitiesResponse(BaseModel):
     generated_at: str
     db_ok: bool          # данные из MariaDB; False — БД недоступна
-    by_size: List[DensityLevelTop]   # топ по абсолютному размеру
-    by_ratio: List[DensityLevelTop]  # топ по относительной силе
+    by_size: list[DensityLevelTop]   # топ по абсолютному размеру
+    by_ratio: list[DensityLevelTop]  # топ по относительной силе
 
 
 class OrderBookRequest(BaseModel):
@@ -54,7 +54,7 @@ class Level(BaseModel):
     quantity: int
     is_density: bool = False
     is_super: bool = False  # суперплотность: сила >= порога * 2
-    ratio: Optional[float] = None
+    ratio: float | None = None
 
 
 class OrderBookResponse(BaseModel):
@@ -62,14 +62,14 @@ class OrderBookResponse(BaseModel):
     figi: str
     depth: int
     orderbook_ts: str
-    bids: List[Level]
-    asks: List[Level]
+    bids: list[Level]
+    asks: list[Level]
     spread: float
     mid_price: float
     bid_total: int
     ask_total: int
     imbalance: float
-    densities: List[Level]
+    densities: list[Level]
 
 
 class TradesRequest(BaseModel):
@@ -95,6 +95,6 @@ class TradesResponse(BaseModel):
     buy_volume: int
     sell_volume: int
     delta: int
-    vwap: Optional[float]
-    large_prints: List[TradePrint]
-    recent: List[TradePrint]
+    vwap: float | None
+    large_prints: list[TradePrint]
+    recent: list[TradePrint]

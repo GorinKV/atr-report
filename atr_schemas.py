@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field
 from datetime import date
-from typing import Optional, List, Dict
+
+from pydantic import BaseModel, Field
+
 
 class ATRRequest(BaseModel):
     ticker: str = Field(default="SBER")
@@ -10,7 +11,7 @@ class ATRRequest(BaseModel):
     interval: int = Field(default=10, ge=1, le=60)
     atr_period: int = Field(default=14, ge=2, le=100)
     days_back: int = Field(default=10, ge=1, le=90)
-    report_date: Optional[date] = Field(default=None)
+    report_date: date | None = Field(default=None)
 
 
 class CandleRow(BaseModel):
@@ -22,8 +23,8 @@ class CandleRow(BaseModel):
     close: float
     range: float
     volume: int
-    atr: Optional[float]
-    ratio: Optional[float]
+    atr: float | None
+    ratio: float | None
     dir: str  # "up" | "down" | "flat" — направление тела свечи
     mark: str
     verdict: str
@@ -31,11 +32,11 @@ class CandleRow(BaseModel):
 
 class ATRSummary(BaseModel):
     total_candles: int
-    avg_ratio: Optional[float]
-    median_ratio: Optional[float]
-    min_ratio: Optional[float]
-    max_ratio: Optional[float]
-    distribution: Dict[str, int]
+    avg_ratio: float | None
+    median_ratio: float | None
+    min_ratio: float | None
+    max_ratio: float | None
+    distribution: dict[str, int]
     up_spikes: int = 0    # все всплески (R/ATR > 2) вверх
     down_spikes: int = 0  # все всплески (R/ATR > 2) вниз
     super_up_spikes: int = 0    # супервсплески (R/ATR > 4) вверх
@@ -68,10 +69,10 @@ class SpikesResponse(BaseModel):
     interval: int
     generated_at: str
     total: int          # всплесков в окне (до лимита топ-N)
-    spikes: List[SpikeItem]      # отсортированы по силе, топ-N
-    by_day: List[DayStat]        # сводка по дням
-    by_hour: Dict[str, int]      # распределение по часам суток (МСК)
-    by_hour_super: Dict[str, int]  # из них супервсплески
+    spikes: list[SpikeItem]      # отсортированы по силе, топ-N
+    by_day: list[DayStat]        # сводка по дням
+    by_hour: dict[str, int]      # распределение по часам суток (МСК)
+    by_hour_super: dict[str, int]  # из них супервсплески
 
 
 class ATRResponse(BaseModel):
@@ -80,9 +81,9 @@ class ATRResponse(BaseModel):
     atr_period: int
     interval: int = 10  # минут на свечу, для подписи окна ATR
     generated_at: str  # момент построения отчёта (МСК, ISO)
-    rows: List[CandleRow]
+    rows: list[CandleRow]
     summary: ATRSummary
-    spikes: List[SpikeItem] = Field(default_factory=list)  # всплески за всё окно истории
-    by_day: List[DayStat] = Field(default_factory=list)
-    by_hour: Dict[str, int] = Field(default_factory=dict)
-    by_hour_super: Dict[str, int] = Field(default_factory=dict)
+    spikes: list[SpikeItem] = Field(default_factory=list)  # всплески за всё окно истории
+    by_day: list[DayStat] = Field(default_factory=list)
+    by_hour: dict[str, int] = Field(default_factory=dict)
+    by_hour_super: dict[str, int] = Field(default_factory=dict)

@@ -8,17 +8,17 @@
 import asyncio
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from t_tech.invest import Client
 from t_tech.invest.schemas import CandleInterval
 
-from moex_schemas import PriceChange, ChangesResponse
+from moex_schemas import ChangesResponse, PriceChange
 
 router = APIRouter(prefix="/api/moex", tags=["moex"])
-UTC = timezone.utc
+UTC = UTC
 
 # Тикеры по умолчанию — тот же список, что опрашивает фоновый поллер.
 POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
@@ -122,9 +122,22 @@ async def _last_prices(tks: list[str]) -> dict[str, float]:
     try:
         d = await asyncio.to_thread(_last_prices_sync, figis)
     except Exception as e:
-        raise HTTPException(502, f"T-Invest last_prices: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"T-Invest last_prices: {type(e).__name__}: {e}") from e
     _last_prices_cache = (time.monotonic(), d)
     return d
+
+
+def _pick_c10_ref(rows: list[tuple], cutoff: datetime) -> float | None:
+    """Референсная цена для Δ10: close последней минутной свечи,
+    начавшейся не позже cutoff (сейчас − 10 мин). Если свечей до cutoff
+    нет — первая свеча (день начался меньше 10 минут назад)."""
+    past = [(t, c) for t, c, _ in rows if c and t <= cutoff]
+    if past:
+        return past[-1][1]
+    for _, c, _ in rows:
+        if c:
+            return c
+    return None
 
 
 async def _change10(ticker: str, figi: str, last: float | None) -> float | None:
@@ -139,11 +152,7 @@ async def _change10(ticker: str, figi: str, last: float | None) -> float | None:
             now - timedelta(minutes=15), now)
     except Exception:
         rows = []
-    ref = None
-    if rows:
-        cutoff = now - timedelta(minutes=10)
-        past = [(t, c) for t, c, _ in rows if t <= cutoff and c]
-        ref = past[-1][1] if past else rows[0][1]  # день начался <10 мин назад
+    ref = _pick_c10_ref(rows, now - timedelta(minutes=10))
     pct = round((last - ref) / ref * 100, 2) if (ref and last) else None
     _c10_cache[ticker] = (time.monotonic(), pct)
     return pct

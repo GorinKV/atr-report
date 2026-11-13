@@ -9,7 +9,6 @@
 
 Запись асинхронная (очередь + поток), чтобы не тормозить ответ API.
 """
-import asyncio
 import logging
 import os
 import queue
@@ -393,7 +392,7 @@ def cleanup_nightly_sync() -> str:
                 score[_id] = score.get(_id, 0) + rank
             for rank, _id in enumerate(by_ratio):
                 score[_id] = score.get(_id, 0) + rank
-            lvl_keep = sorted(score, key=score.get)[:KEEP_LEVELS]
+            lvl_keep = sorted(score, key=lambda k: score[k])[:KEEP_LEVELS]
             if lvl_keep:
                 marks = ",".join(["%s"] * len(lvl_keep))
                 c.execute(f"DELETE FROM density_levels_v2 WHERE id NOT IN ({marks})",

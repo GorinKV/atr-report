@@ -3,11 +3,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from atr_backend import router as atr_router
-from tinkoff_backend import router as tinkoff_router
-from moex_backend import router as moex_router
-import density_store
 import density_poller
+import density_store
+from atr_backend import router as atr_router
+from moex_backend import router as moex_router
+from tinkoff_backend import router as tinkoff_router
 
 BASE_DIR = Path(__file__).resolve().parent
 

@@ -1,0 +1,26 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["venv", ".git"]
+
+[tool.ruff.lint]
+# E/F — базовые ошибки и pyflakes; I — сортировка импортов;
+# B — bugbear (реальные баги); UP — современный синтаксис.
+# B008 не включаем в игноры отдельно: FastAPI-зависимости (Query(...))
+# в дефолтах — норма. E701 — компактные однострочники if x: return y —
+# устоявшийся стиль проекта.
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "W"]
+ignore = ["B008", "E701"]
+
+[tool.mypy]
+python_version = "3.12"
+# t_tech SDK без type stubs — молчим про недостающие импорты.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

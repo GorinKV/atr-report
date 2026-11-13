@@ -3,19 +3,22 @@ import logging
 import os
 import time
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from t_tech.invest import Client
 from t_tech.invest.schemas import InstrumentIdType
 
-from tinkoff_schemas import (
-    OrderBookRequest, OrderBookResponse, Level,
-    TradesRequest, TradesResponse, TradePrint,
-    DensityEvent, DensitiesHistoryResponse, TopDensitiesResponse,
-)
-
 import density_store
+from tinkoff_schemas import (
+    DensitiesHistoryResponse,
+    DensityEvent,
+    Level,
+    OrderBookResponse,
+    TopDensitiesResponse,
+    TradePrint,
+    TradesResponse,
+)
 
 router = APIRouter(prefix="/api/tinkoff", tags=["tinkoff"])
 
@@ -118,7 +121,6 @@ async def orderbook_snapshot(ticker: str, class_code: str = "TQBR",
 
     all_qty = [q for _, q in bids_raw] + [q for _, q in asks_raw]
     avg_qty = (sum(all_qty) / len(all_qty)) if all_qty else 0.0
-    threshold = density_k * avg_qty
     super_threshold = density_k * SUPER_K * avg_qty
 
     densities = []
@@ -251,7 +253,7 @@ async def trades_get(
 ) -> TradesResponse:
     figi = await _find_figi(ticker.upper(), class_code)
 
-    to_dt = datetime.now(timezone.utc)
+    to_dt = datetime.now(UTC)
     from_dt = to_dt - timedelta(minutes=minutes)
 
     # SDK синхронный (gRPC) — не блокируем event loop.
@@ -274,7 +276,7 @@ async def trades_get(
     prices = [t["price"] for t in trades]
     avg_qty = sum(t["quantity"] for t in trades) / len(trades)
 
-    enriched = []
+    enriched: list[TradePrint] = []
     for i, t in enumerate(trades):
         if i == 0:
             side = "unknown"

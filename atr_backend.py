@@ -1,14 +1,22 @@
 import asyncio
 import math
-from datetime import datetime, timedelta, timezone, date as _date
+from datetime import date as _date
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
-from atr_schemas import (ATRRequest, ATRResponse, CandleRow, ATRSummary, DayStat,
-                         SpikeItem, SpikesResponse)
+from atr_schemas import (
+    ATRRequest,
+    ATRResponse,
+    ATRSummary,
+    CandleRow,
+    DayStat,
+    SpikeItem,
+    SpikesResponse,
+)
 
 router = APIRouter(prefix="/api/atr", tags=["atr"])
 MOEX_BASE = "https://iss.moex.com/iss"
@@ -20,7 +28,9 @@ async def fetch_moex_candles(client, ticker, engine, market, board, interval, da
            f"/boards/{board}/securities/{ticker}/candles.json")
     till = datetime.now()
     frm = till - timedelta(days=days_back)
-    all_rows, columns, start = [], [], 0
+    all_rows: list = []
+    columns: list[str] = []
+    start = 0
     while True:
         params = {"interval": interval, "from": frm.strftime("%Y-%m-%d"),
                   "till": till.strftime("%Y-%m-%d"), "start": start, "iss.meta": "off"}
@@ -28,7 +38,7 @@ async def fetch_moex_candles(client, ticker, engine, market, board, interval, da
             r = await client.get(url, params=params, timeout=HTTP_TIMEOUT)
             r.raise_for_status()
         except httpx.HTTPError as e:
-            raise HTTPException(502, f"MOEX ISS недоступен: {e}")
+            raise HTTPException(502, f"MOEX ISS недоступен: {e}") from e
         block = r.json().get("candles", {})
         rows = block.get("data", [])
         columns = block.get("columns", columns)
@@ -138,7 +148,9 @@ def build_spike_analytics(df, atr, limit=SPIKES_LIMIT):
     - by_hour_super: то же, только супервсплески.
     Сводные статистики считаются по ПОЛНОМУ списку, без лимита.
     """
-    spikes, by_hour, by_hour_super = [], {}, {}
+    spikes: list = []
+    by_hour: dict[str, int] = {}
+    by_hour_super: dict[str, int] = {}
     for ts, row in df.iterrows():
         a = atr.loc[ts]
         if pd.isna(a) or not a:
@@ -239,6 +251,6 @@ async def atr_report_get(ticker: str = Query("SBER"), engine: str = Query("stock
     rd = None
     if report_date:
         try: rd = _date.fromisoformat(report_date)
-        except ValueError: raise HTTPException(400, "report_date: YYYY-MM-DD")
+        except ValueError: raise HTTPException(400, "report_date: YYYY-MM-DD") from None
     return await _run_report(ATRRequest(ticker=ticker, engine=engine, market=market,
         board=board, interval=interval, atr_period=atr_period, days_back=days_back, report_date=rd))
