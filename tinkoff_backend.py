@@ -61,12 +61,19 @@ def _find_figi_sync(ticker, class_code):
             )
             return r.instrument.figi
         except Exception:
-            # Акции/ETF не нашлись — пробуем фьючерсы (класс SPBFUT и т.п.).
-            r = client.instruments.futures_by(
-                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                id=ticker,
-            )
-            return r.instrument.figi
+            # Акции/ETF не нашлись — пробуем ETF, затем фьючерсы.
+            try:
+                r = client.instruments.etf_by(
+                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+                    id=ticker,
+                )
+                return r.instrument.figi
+            except Exception:
+                r = client.instruments.future_by(
+                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+                    id=ticker,
+                )
+                return r.instrument.figi
 
 
 async def _find_figi(ticker, class_code):
@@ -95,16 +102,14 @@ def _get_order_book_sync(figi, depth):
         )
 
 
-@router.get("/orderbook", response_model=OrderBookResponse)
-async def orderbook_get(
-    ticker: str = Query("SBER"),
-    class_code: str = Query("TQBR"),
-    depth: int = Query(20, ge=1, le=50),
-    density_k: float = Query(DENSITY_K, ge=1.0, le=10.0,
-        description="Сила плотности: ratio уровня к среднему объёму"),
-) -> OrderBookResponse:
+async def orderbook_snapshot(ticker: str, class_code: str = "TQBR",
+                             depth: int = 20, density_k: float = DENSITY_K) -> OrderBookResponse:
+    """Полный цикл: стакан -> плотности/суперплотности -> запись новых
+    в историю (память + MariaDB). Используется и API-эндпоинтом,
+    и фоновым поллером (density_poller)."""
     # SDK синхронный (gRPC) — не блокируем event loop.
-    figi = await _find_figi(ticker.upper(), class_code)
+    tk = ticker.upper()
+    figi = await _find_figi(tk, class_code)
     ob = await asyncio.to_thread(_get_order_book_sync, figi, depth)
 
     bids_raw = [(_to_float(b.price), b.quantity) for b in ob.bids]
@@ -141,7 +146,6 @@ async def orderbook_get(
 
     # В историю пишем только НОВЫЕ плотности (появился уровень цены) —
     # иначе автообновление каждые 15 с завалит историю дублями.
-    tk = ticker.upper()
     prev_seen = _density_seen.get(tk, set())
     cur_seen = set()
     ts_now = _msk_now().isoformat(timespec="seconds")
@@ -190,6 +194,17 @@ async def orderbook_get(
         imbalance=imbalance,
         densities=sorted(densities, key=lambda x: -(x.ratio or 0))[:10],
     )
+
+
+@router.get("/orderbook", response_model=OrderBookResponse)
+async def orderbook_get(
+    ticker: str = Query("SBER"),
+    class_code: str = Query("TQBR"),
+    depth: int = Query(20, ge=1, le=50),
+    density_k: float = Query(DENSITY_K, ge=1.0, le=10.0,
+        description="Сила плотности: ratio уровня к среднему объёму"),
+) -> OrderBookResponse:
+    return await orderbook_snapshot(ticker, class_code, depth, density_k)
 
 
 # ============================================================
