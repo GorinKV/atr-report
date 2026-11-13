@@ -9,6 +9,8 @@
 
 Запись асинхронная (очередь + поток), чтобы не тормозить ответ API.
 """
+import asyncio
+import logging
 import os
 import queue
 import threading
@@ -17,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 import pymysql
 
 from tinkoff_schemas import DensityEvent
+
+log = logging.getLogger("uvicorn.error")
 
 MSK = timezone(timedelta(hours=3))
 
@@ -66,6 +70,12 @@ _worker_started = False
 _db_ok = False  # последний статус подключения, для логов/фолбэка
 
 
+def _db_row(ev: dict) -> dict:
+    """Копия события с ts в формате MariaDB DATETIME: 'YYYY-MM-DD HH:MM:SS'.
+    ts приходит в ISO с 'T' и таймзоной (+03:00) — MySQL её не принимает."""
+    return {**ev, "ts": ev["ts"].replace("T", " ").split("+")[0]}
+
+
 def _worker():
     global _db_ok
     conn = None
@@ -87,8 +97,9 @@ def _worker():
                 c.execute(
                     "INSERT INTO density_events (ts, ticker, side, price, quantity, ratio, is_super)"
                     " VALUES (%(ts)s, %(ticker)s, %(side)s, %(price)s, %(quantity)s, %(ratio)s, %(is_super)s)",
-                    ev)
-        except Exception:
+                    _db_row(ev))
+        except Exception as e:
+            log.warning("density_store: запись в БД не удалась: %s: %s", type(e).__name__, e)
             _db_ok = False
             try:
                 if conn: conn.close()

@@ -167,7 +167,10 @@ async def orderbook_snapshot(ticker: str, class_code: str = "TQBR",
                 "is_super": lvl.is_super,
             }
             _density_history.append(ev)   # in-memory: всегда (fallback)
-            density_store.enqueue_events([ev])  # в MariaDB, если настроена
+            # В MariaDB пишем только суперплотности — обычные плотности
+            # слишком частые события, история должна быть значимой.
+            if ev["is_super"]:
+                density_store.enqueue_events([ev])
     _density_seen[tk] = cur_seen
 
     best_bid = bids_raw[0][0] if bids_raw else 0.0
