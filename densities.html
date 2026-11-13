@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>MOEX · Топ плотностей</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--bg:#0f1115;--panel:#161a22;--border:#242a36;--text:#d7dbe3;--muted:#7b8494;
+        --accent:#4f9eff;--green:#3fbf7f;--red:#e05b5b;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+       background:var(--bg);color:var(--text);font-size:14px}
+  header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{margin:0;font-size:18px;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  header button{margin-left:auto}
+  button{background:var(--accent);color:#fff;border:none;padding:8px 18px;border-radius:6px;
+         font-size:13px;font-weight:500;cursor:pointer}
+  button:hover{opacity:.85}
+  button:disabled{opacity:.5;cursor:wait}
+  main{padding:20px 24px 40px}
+  .status{padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;display:none}
+  .status.error{display:block;background:#2a1416;color:var(--red);border:1px solid #4a1f22}
+  .status.info{display:block;background:#14202a;color:var(--accent);border:1px solid #1f3a4a}
+  .note{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  @media(max-width:1100px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+  .panel h2{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--muted);
+            text-transform:uppercase;letter-spacing:.5px}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+  thead th{text-align:right;padding:7px 8px;border-bottom:1px solid var(--border);color:var(--muted);
+           font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  thead th:first-child,thead th:nth-child(2){text-align:left}
+  tbody td{padding:6px 8px;border-bottom:1px solid #1a1f29;text-align:right}
+  tbody td:first-child,tbody td:nth-child(2){text-align:left}
+  tbody tr:hover{background:#141821}
+  .bid{color:var(--green)} .ask{color:var(--red)}
+  .super{box-shadow:inset 2px 0 0 var(--accent);font-weight:600}
+  .ticker{font-weight:700}
+  .gone{color:var(--muted)}
+  .active{color:var(--green)}
+  .footer-meta{color:var(--muted);font-size:12px;margin-top:14px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Топ плотностей · все тикеры</h1>
+  <span class="sub">poll_tickers.txt · суперплотности 💥 · обновление 15 с</span>
+  <button id="load">Обновить</button>
+</header>
+<main>
+  <div id="status" class="status"></div>
+  <div class="note">
+    «Съедено» — оценка объёма, снятого с уровня (максимальный виденный размер минус текущий;
+    отмена заявки неотличима от сделки). «Сила» — отношение объёма уровня к среднему объёму
+    уровня стакана тикера. Активные уровни подсвечены зелёным.
+  </div>
+  <div class="grid">
+    <div class="panel"><h2>Топ-25 по размеру (абсолютный)</h2><div id="by-size"></div></div>
+    <div class="panel"><h2>Топ-25 по силе (R/avg)</h2><div id="by-ratio"></div></div>
+  </div>
+  <div class="footer-meta" id="meta"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const statusEl=$('status');
+function setStatus(m,k){if(!m){statusEl.className='status';statusEl.textContent='';return}
+  statusEl.className='status '+(k||'info');statusEl.textContent=m}
+function fmt(n,d=4){return n===null||n===undefined?'—':Number(n).toFixed(d)}
+function fmtInt(n){return n===null||n===undefined?'—':Number(n).toLocaleString('ru-RU')}
+function fmtTs(ts){
+  const today=new Date().toISOString().slice(0,10);
+  return ts.slice(0,10)===today ? ts.slice(11,19) : ts.slice(5,16).replace('T',' ');
+}
+function fmtEaten(n){
+  if(!n) return '—';
+  return n>=1e6 ? (n/1e6).toFixed(1)+' млн' : n>=1e3 ? (n/1e3).toFixed(1)+' тыс' : fmtInt(n);
+}
+async function load(){
+  const btn=$('load');btn.disabled=true;setStatus('Загрузка…','info');
+  try{
+    const r=await fetch('/api/tinkoff/densities/top?limit=25');
+    if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}
+      setStatus('Ошибка: '+m,'error');return}
+    const d=await r.json();
+    render($('by-size'), d.by_size, true);
+    render($('by-ratio'), d.by_ratio, false);
+    $('meta').textContent = 'данные: '+(d.db_ok?'MariaDB':'БД недоступна')+
+      ' · построено: '+d.generated_at.slice(11,19)+' МСК';
+    setStatus(null);
+  }catch(e){setStatus('Сеть/сервер: '+e.message,'error')}
+  finally{btn.disabled=false}
+}
+function render(el, rows, isSize){
+  if(!rows.length){el.innerHTML='<p style="color:var(--muted)">Пока нет данных — плотности копятся фоновым поллером во время торгов.</p>';return}
+  const sizeCol = isSize ? 'Размер' : 'R/avg';
+  let h=`<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>${sizeCol}</th>
+    <th>${isSize?'R/avg':'Размер'}</th><th>Появилась</th><th>Съедено</th><th>Статус</th></tr></thead><tbody>`;
+  for(const r of rows){
+    const sideCls = r.side==='bid'?'bid':'ask';
+    h+=`<tr class="${r.is_super?'super':''}">
+      <td class="ticker">${r.ticker}</td>
+      <td class="${sideCls}">${r.side==='bid'?'🟢 bid':'🔴 ask'}</td>
+      <td class="${sideCls}">${fmt(r.price)}</td>
+      <td>${isSize?'<b>'+fmtInt(r.size)+'</b>':fmtInt(r.size)}</td>
+      <td>${isSize?fmt(r.ratio,2):'<b>'+fmt(r.ratio,2)+'</b>'}</td>
+      <td>${fmtTs(r.first_ts)}</td>
+      <td>${fmtEaten(r.eaten)}</td>
+      <td class="${r.active?'active':'gone'}">${r.is_super?'💥 ':''}${r.active?'активна':'ушла'}</td>
+    </tr>`;
+  }
+  h+='</tbody></table>';
+  el.innerHTML=h;
+}
+$('load').addEventListener('click',load);
+setInterval(()=>{if(document.visibilityState==='visible')load()},15000);
+load();
+</script>
+</body>
+</html>

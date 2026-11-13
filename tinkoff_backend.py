@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import time
 from collections import deque
@@ -11,7 +12,7 @@ from t_tech.invest.schemas import InstrumentIdType
 from tinkoff_schemas import (
     OrderBookRequest, OrderBookResponse, Level,
     TradesRequest, TradesResponse, TradePrint,
-    DensityEvent, DensitiesHistoryResponse,
+    DensityEvent, DensitiesHistoryResponse, TopDensitiesResponse,
 )
 
 import density_store
@@ -173,6 +174,25 @@ async def orderbook_snapshot(ticker: str, class_code: str = "TQBR",
                 density_store.enqueue_events([ev])
     _density_seen[tk] = cur_seen
 
+    # Состояние уровней в БД (для топ-25 по размеру и по силе).
+    # Ошибки БД не мешают основному ответу: пишем в отдельном потоке
+    # и логируем, if БД недоступна — топ-дашборд покажет пусто.
+    try:
+        level_rows = [
+            {"side": side, "price": lvl.price, "quantity": lvl.quantity,
+             "ratio": lvl.ratio, "is_super": lvl.is_super}
+            for side, lvls in (("bid", bids), ("ask", asks))
+            for lvl in lvls if lvl.is_density
+        ]
+        if level_rows:
+            await asyncio.to_thread(density_store.upsert_levels_sync, tk, ts_now, level_rows)
+        gone = prev_seen - cur_seen
+        if gone:
+            await asyncio.to_thread(density_store.mark_levels_gone_sync, tk, list(gone))
+    except Exception as e:
+        logging.getLogger("uvicorn.error").warning(
+            "orderbook %s: уровень не сохранён: %s: %s", tk, type(e).__name__, e)
+
     best_bid = bids_raw[0][0] if bids_raw else 0.0
     best_ask = asks_raw[0][0] if asks_raw else 0.0
     spread = round(best_ask - best_bid, 6) if best_bid and best_ask else 0.0
@@ -306,6 +326,26 @@ async def trades_get(
         vwap=round(vwap, 6),
         large_prints=large[:20],
         recent=recent,
+    )
+
+
+# ============================================================
+# Топ-25 плотностей (по размеру и по силе)
+# ============================================================
+@router.get("/densities/top", response_model=TopDensitiesResponse)
+async def densities_top_get(
+    limit: int = Query(25, ge=1, le=100),
+) -> TopDensitiesResponse:
+    """Самые большие плотности по всем тикерам из poll_tickers.txt:
+    два топа — по абсолютному размеру (объём уровня) и по относительной
+    силе (R/avg для своего тикера). Поля eaten — оценка съеденного
+    с уровня объёма (max - текущий); lvl активен, если видели < 45 с."""
+    by_size, by_ratio, db_ok = await asyncio.to_thread(density_store.top_levels_sync, limit)
+    return TopDensitiesResponse(
+        generated_at=_msk_now().isoformat(timespec="seconds"),
+        db_ok=db_ok,
+        by_size=by_size,
+        by_ratio=by_ratio,
     )
 
 

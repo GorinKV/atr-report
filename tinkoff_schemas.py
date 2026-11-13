@@ -19,6 +19,26 @@ class DensitiesHistoryResponse(BaseModel):
     events: List[DensityEvent]  # новые сверху
 
 
+class DensityLevelTop(BaseModel):
+    ticker: str
+    side: str            # "bid" | "ask"
+    price: float
+    size: int            # максимальный объём уровня (абсолютный размер)
+    ratio: float         # максимальная сила относительно среднего (R/avg)
+    first_ts: str        # время появления (МСК, ISO)
+    last_ts: str         # когда уровень последний раз видели (МСК)
+    eaten: int           # съедено с уровня, оценка: max(size) - текущий
+    is_super: bool = False
+    active: bool = False # уровень сейчас в стакане
+
+
+class TopDensitiesResponse(BaseModel):
+    generated_at: str
+    db_ok: bool          # данные из MariaDB; False — БД недоступна
+    by_size: List[DensityLevelTop]   # топ по абсолютному размеру
+    by_ratio: List[DensityLevelTop]  # топ по относительной силе
+
+
 class OrderBookRequest(BaseModel):
     ticker: str = Field(default="SBER")
     class_code: str = Field(default="TQBR")

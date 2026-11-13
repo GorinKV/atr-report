@@ -39,6 +39,28 @@ CREATE TABLE IF NOT EXISTS density_events (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
 
+# Состояние уровней плотностей: живёт, пока уровень существует в стакане.
+# max_qty — максимум виденного объёма, last_qty — текущий; разница =
+# съеденный с уровня объём (оценка: отмена заявки неотличима от сделки).
+_LEVELS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS density_levels (
+    id        BIGINT AUTO_INCREMENT PRIMARY KEY,
+    ticker    VARCHAR(16) NOT NULL,
+    side      ENUM('bid','ask') NOT NULL,
+    price     DECIMAL(20,6) NOT NULL,
+    first_ts  DATETIME(0) NOT NULL,
+    last_ts   DATETIME(0) NOT NULL,
+    max_qty   BIGINT NOT NULL,
+    last_qty  BIGINT NOT NULL,
+    max_ratio FLOAT NOT NULL,
+    is_super  BOOLEAN NOT NULL DEFAULT 0,
+    UNIQUE KEY uq_level (ticker, side, price),
+    INDEX idx_max_qty (max_qty),
+    INDEX idx_max_ratio (max_ratio),
+    INDEX idx_last_ts (last_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
 
 def _db_conf():
     """Параметры подключения из окружения; None, если БД не настроена."""
@@ -127,9 +149,107 @@ def enqueue_events(events: list[dict]):
 
 
 # ============================================================
-# Чтение истории из БД
+# Состояние уровней плотностей (для топа по размеру и по силе)
 # ============================================================
-def load_events(ticker: str | None, limit: int) -> list[DensityEvent]:
+def upsert_levels_sync(ticker: str, ts_db: str, levels: list[dict]) -> bool:
+    """Обновляет/создаёт записи уровней одним батчем. True — успех."""
+    if not levels:
+        return True
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return False
+        with conn.cursor() as c:
+            c.execute(_LEVELS_TABLE_SQL)
+            c.executemany(
+                "INSERT INTO density_levels"
+                " (ticker, side, price, first_ts, last_ts, max_qty, last_qty, max_ratio, is_super)"
+                " VALUES (%(ticker)s, %(side)s, %(price)s, %(ts)s, %(ts)s,"
+                "         %(quantity)s, %(quantity)s, %(ratio)s, %(is_super)s)"
+                " ON DUPLICATE KEY UPDATE last_ts = VALUES(last_ts),"
+                " last_qty = VALUES(last_qty),"
+                " max_qty = GREATEST(max_qty, VALUES(max_qty)),"
+                " max_ratio = GREATEST(max_ratio, VALUES(max_ratio)),"
+                " is_super = VALUES(is_super)",
+                [{"ticker": ticker, "ts": ts_db, **lvl} for lvl in levels])
+        return True
+    except Exception as e:
+        log.warning("density_store: upsert уровней не удался: %s: %s", type(e).__name__, e)
+        return False
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def mark_levels_gone_sync(ticker: str, gone_keys: list[tuple[str, float]]):
+    """Уровни исчезли из стакана — съеденным считается весь максимальный объём."""
+    if not gone_keys:
+        return
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return
+        with conn.cursor() as c:
+            for side, price in gone_keys:
+                c.execute("UPDATE density_levels SET last_qty = 0"
+                          " WHERE ticker = %s AND side = %s AND price = %s",
+                          (ticker, side, price))
+    except Exception as e:
+        log.warning("density_store: mark_gone не удался: %s: %s", type(e).__name__, e)
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def top_levels_sync(limit: int = 25):
+    """Топ уровней по абсолютному размеру и по относительной силе.
+    Возвращает (by_size, by_ratio, db_ok)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return [], [], False
+        base = ("SELECT ticker, side, price, first_ts, last_ts,"
+                " max_qty, last_qty, max_ratio, is_super FROM density_levels")
+        with conn.cursor() as c:
+            c.execute(_LEVELS_TABLE_SQL)
+            c.execute(base + " ORDER BY max_qty DESC LIMIT %s", (limit,))
+            rows_size = c.fetchall()
+            c.execute(base + " ORDER BY max_ratio DESC LIMIT %s", (limit,))
+            rows_ratio = c.fetchall()
+        now_naive = datetime.now(MSK).replace(tzinfo=None)
+
+        def to_model(r):
+            ticker, side, price, fts, lts, maxq, lastq, ratio, sup = r
+            fts, lts = fts.replace(tzinfo=MSK), lts.replace(tzinfo=MSK)
+            return {
+                "ticker": ticker, "side": side, "price": float(price),
+                "size": int(maxq), "ratio": round(float(ratio), 2),
+                "first_ts": fts.isoformat(timespec="seconds"),
+                "last_ts": lts.isoformat(timespec="seconds"),
+                "eaten": max(int(maxq) - int(lastq), 0),
+                "is_super": bool(sup),
+                "active": (now_naive - lts.replace(tzinfo=None)).total_seconds() < 45,
+            }
+
+        return ([to_model(r) for r in rows_size],
+                [to_model(r) for r in rows_ratio], True)
+    except Exception as e:
+        log.warning("density_store: чтение топа не удалось: %s: %s", type(e).__name__, e)
+        return [], [], False
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+# ============================================================
+# Чтение истории из БД
+# ============================================================def load_events(ticker: str | None, limit: int) -> list[DensityEvent]:
     """Читает события из БД (новые сверху); при недоступности БД возвращает []."""
     conn = None
     try:
