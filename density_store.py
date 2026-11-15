@@ -50,6 +50,16 @@ CREATE TABLE IF NOT EXISTS density_events (
 #           чтобы отличать «полностью съедена» от «снята с объёмом»).
 # Новая таблица, а не ALTER: у пользователя БД нет права ALTER — миграция
 # делается переносом строк (CREATE + INSERT SELECT) в ensure_levels_sync().
+_TRADED_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS density_traded (
+    ticker VARCHAR(16) NOT NULL,
+    side   ENUM('bid','ask') NOT NULL,
+    price  DECIMAL(20,6) NOT NULL,
+    traded BIGINT NOT NULL DEFAULT 0,
+    UNIQUE KEY uq_level (ticker, side, price)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
 _LEVELS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS density_levels_v2 (
     id        BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -100,6 +110,16 @@ def _meta_set(conn, key: str, value: str) -> None:
                   " ON DUPLICATE KEY UPDATE v = VALUES(v)", (key, value))
 
 
+def _meta_get_int(conn, key: str) -> int | None:
+    v = _meta_get(conn, key)
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
 def ensure_levels_sync(conn) -> None:
     """Создаёт density_levels_v2 и ОДИН РАЗ переносит данные из v1.
 
@@ -140,6 +160,84 @@ def ensure_levels_sync(conn) -> None:
         n = c.fetchone()[0]
     log.info("density_store: таблица уровней v2 готова, строк: %s", n)
     _levels_ready = True
+
+
+def ensure_traded_sync(conn) -> None:
+    """Таблица фактического проторгованного объёма по уровням."""
+    with conn.cursor() as c:
+        c.execute(_TRADED_TABLE_SQL)
+
+
+def add_traded_sync(ticker: str, parts: list[dict]) -> bool:
+    """Копит ФАКТ проторгованного объёма по уровням (лента сделок).
+
+    parts: [{"side": "bid"|"ask", "price": float, "quantity": int}] —
+    уже сгруппированные сделки. Право ALTER у atr_report нет, поэтому
+    новая величина — отдельная таблица (паттерн v2), а не колонка.
+
+    Важно: оценка «съедено» из стакана неотличима отмену заявки от
+    сделки, а traded — только реальные сделки по ЦЕНЕ УРОВНЯ. Статус
+    «полностью съедена» ставится по traded_pct (см. _level_status).
+    """
+    if not parts:
+        return True
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return False
+        ensure_traded_sync(conn)
+        with conn.cursor() as c:
+            c.executemany(
+                "INSERT INTO density_traded (ticker, side, price, traded)"
+                " VALUES (%(ticker)s, %(side)s, %(price)s, %(quantity)s)"
+                " ON DUPLICATE KEY UPDATE traded = traded + VALUES(traded)",
+                [{"ticker": ticker, **p,
+                  "price": round(float(p["price"]), 6)} for p in parts])
+        return True
+    except Exception as e:
+        log.warning("density_store: коп traded не удался: %s: %s",
+                    type(e).__name__, e)
+        return False
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def get_trades_cursor_sync(ticker: str) -> str | None:
+    """ISO-время последней учтённой сделки тикера (density_meta)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return None
+        _meta_ensure(conn)
+        return _meta_get(conn, f"trades_cursor:{ticker}")
+    except Exception:
+        return None
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def set_trades_cursor_sync(ticker: str, iso_ts: str) -> None:
+    """Запомнить курсор ленты сделок (переживает рестарты)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return
+        _meta_ensure(conn)
+        _meta_set(conn, f"trades_cursor:{ticker}", iso_ts)
+    except Exception as e:
+        log.warning("density_store: курсор сделок не сохранён: %s: %s",
+                    type(e).__name__, e)
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 
 def _db_conf():
@@ -303,6 +401,42 @@ def mark_levels_gone_sync(ticker: str, gone_keys: list[tuple[str, float]]):
             except Exception: pass
 
 
+def hits_word(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11: return "удар"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14): return "удара"
+    return "ударов"
+
+
+def _level_status(active: bool, hits: int, eaten_pct: float,
+                  traded_pct: float) -> str:
+    """Чистая функция статуса уровня — тестируется без БД.
+
+    Принцип (по запросу пользователя): «полностью съедена» ставится
+    только по ФАКТУ проторгованного объёма (traded_pct), а не по оценке
+    из стакана — отмена заявки неотличима от сделки.
+      активна / держится, N ударов — уровень сейчас в стакане;
+      полностью съедена (факт N%)  — реально проторговано ≥80% размера;
+      снята, не проторгована       — из стакана «съедено» ≥90% по оценке,
+                                     но факт <20%: стену сняли/отменили,
+                                     сделок почти не было;
+      выдержала N ударов и ушла    — остаток проседал N раз, уровень ушёл;
+      ушла                         — исчезла с большим остатком.
+    """
+    if active:
+        if hits >= 2:
+            return f"держится, {hits} {hits_word(hits)}"
+        if hits == 1:
+            return "держится после удара"
+        return "активна"
+    if traded_pct >= 80:
+        return f"полностью съедена (факт {traded_pct:g}%)"
+    if eaten_pct >= 90 and traded_pct < 20:
+        return "снята, не проторгована"
+    if hits >= 2:
+        return f"выдержала {hits} {hits_word(hits)} и ушла"
+    return "ушла"
+
+
 def top_levels_sync(limit: int = 25):
     """Топ уровней по абсолютному размеру и по относительной силе.
     Возвращает (by_size, by_ratio, db_ok)."""
@@ -312,55 +446,41 @@ def top_levels_sync(limit: int = 25):
         if conn is None:
             return [], [], False
         ensure_levels_sync(conn)
-        base = ("SELECT ticker, side, price, first_ts, last_ts,"
-                " max_qty, last_qty, max_ratio, is_super, hits, gone"
-                " FROM density_levels_v2")
+        base = ("SELECT l.ticker, l.side, l.price, l.first_ts, l.last_ts,"
+                " l.max_qty, l.last_qty, l.max_ratio, l.is_super, l.hits, l.gone,"
+                " COALESCE(t.traded, 0)"
+                " FROM density_levels_v2 l"
+                " LEFT JOIN density_traded t"
+                "   ON t.ticker = l.ticker AND t.side = l.side"
+                "  AND t.price = l.price")
         with conn.cursor() as c:
-            c.execute(base + " ORDER BY max_qty DESC LIMIT %s", (limit,))
+            c.execute(base + " ORDER BY l.max_qty DESC LIMIT %s", (limit,))
             rows_size = c.fetchall()
-            c.execute(base + " ORDER BY max_ratio DESC LIMIT %s", (limit,))
+            c.execute(base + " ORDER BY l.max_ratio DESC LIMIT %s", (limit,))
             rows_ratio = c.fetchall()
         now_naive = datetime.now(MSK).replace(tzinfo=None)
 
-        def hits_word(n: int) -> str:
-            if n % 10 == 1 and n % 100 != 11: return "удар"
-            if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14): return "удара"
-            return "ударов"
-
         def to_model(r):
             (ticker, side, price, fts, lts, maxq, lastq,
-             ratio, sup, hits, gone) = r
+             ratio, sup, hits, gone, traded) = r
             fts, lts = fts.replace(tzinfo=MSK), lts.replace(tzinfo=MSK)
             maxq, lastq, hits = int(maxq), int(lastq), int(hits)
+            traded = int(traded)
             eaten = max(maxq - lastq, 0)
             eaten_pct = round(eaten / maxq * 100, 1) if maxq > 0 else 0.0
+            traded_pct = round(traded / maxq * 100, 1) if maxq > 0 else 0.0
             active = (not gone) and (
                 now_naive - lts.replace(tzinfo=None)).total_seconds() < 45
-            # Статус: анализ пары «размер / съедено» + число ударов.
-            #   активна             — уровень сейчас в стакане;
-            #   выдержала N ударов  — остаток заметно проседал N раз, но
-            #                         уровень стоит (главное для плотности);
-            #   полностью съедена   — к уходу из стакана съедено ≥90%;
-            #   ушла                — исчезла с большим остатком
-            #                         (снята/переставлена, а не съедена).
-            if active:
-                status = "активна"
-                if hits >= 2:
-                    status = f"держится, {hits} {hits_word(hits)}"
-                elif hits == 1:
-                    status = "держится после удара"
-            elif eaten_pct >= 90:
-                status = "полностью съедена"
-            elif hits >= 2:
-                status = f"выдержала {hits} {hits_word(hits)} и ушла"
-            else:
-                status = "ушла"
+            # Статус: чистая функция _level_status (см. докстринг): «полностью
+            # съедена» — только по факту проторгованного объёма.
+            status = _level_status(active, hits, eaten_pct, traded_pct)
             return {
                 "ticker": ticker, "side": side, "price": float(price),
                 "size": maxq, "ratio": round(float(ratio), 2),
                 "first_ts": fts.isoformat(timespec="seconds"),
                 "last_ts": lts.isoformat(timespec="seconds"),
                 "eaten": eaten, "eaten_pct": eaten_pct,
+                "traded": traded, "traded_pct": traded_pct,
                 "hits": hits, "gone": bool(gone),
                 "is_super": bool(sup), "active": active,
                 "status": status,

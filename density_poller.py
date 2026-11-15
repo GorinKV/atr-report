@@ -16,8 +16,10 @@
 """
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import density_store as ds
 import tinkoff_backend as tb
 import trading_schedule as tsched
 
@@ -27,6 +29,14 @@ POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
 POLL_INTERVAL = 15.0       # сек между циклами
 POLL_DEPTH = 20
 POLL_DENSITY_K = 1.5       # чувствительный порог: ловит и плотности, и супер
+
+# Агрессивная SELL-сделка исполняется по бидам (выедает bid-уровни),
+# BUY — по аскам. OrderDirection: BUY=1, SELL=2, UNSPECIFIED=0.
+DIRECTION_BUY = 1
+DIRECTION_SELL = 2
+# get_last_trades T-Invest отдаёт сделки только за последний час.
+TRADES_MAX_BACK = timedelta(minutes=55)
+TRADES_FIRST_WINDOW = timedelta(seconds=60)
 
 _task: asyncio.Task | None = None
 
@@ -65,6 +75,60 @@ def _is_trading_time() -> bool:
     return True
 
 
+def _aggregate_trades(trades: list[dict]) -> list[dict]:
+    """Группирует ленту сделок по (стороне, цене) — чистая функция.
+
+    SELL исполняется по бидам (выедает bid-уровни), BUY — по аскам;
+    сделки без направления (0) не относим никуда. Цена уровня
+    совпадает с ценой сделки точно, ключ — цена с точностью 6 знаков.
+    """
+    agg: dict[tuple[str, float], int] = {}
+    for t in trades:
+        d = t.get("direction")
+        if d == DIRECTION_SELL:
+            side = "bid"
+        elif d == DIRECTION_BUY:
+            side = "ask"
+        else:
+            continue
+        key = (side, round(float(t["price"]), 6))
+        agg[key] = agg.get(key, 0) + int(t["quantity"])
+    return [{"side": s, "price": p, "quantity": q}
+            for (s, p), q in agg.items()]
+
+
+async def _accumulate_trades(ticker: str) -> None:
+    """Факт проторгованного объёма: лента сделок с прошлый курсор.
+
+    Курсор хранится в density_meta (переживает рестарты). Первый запуск
+    — последние TRADES_FIRST_WINDOW секунд; get_last_trades отдаёт
+    сделки только за последний час, поэтому отставший курсор режем
+    сверху (TRADES_MAX_BACK) — старше всё равно не достать.
+    """
+    now = datetime.now(UTC)
+    cursor = ds.get_trades_cursor_sync(ticker)
+    from_dt: datetime
+    if cursor:
+        try:
+            from_dt = datetime.fromisoformat(cursor)
+        except ValueError:
+            from_dt = now - TRADES_FIRST_WINDOW
+    else:
+        from_dt = now - TRADES_FIRST_WINDOW
+    if from_dt.tzinfo is None:
+        from_dt = from_dt.replace(tzinfo=UTC)
+    from_dt = max(from_dt, now - TRADES_MAX_BACK)
+
+    trades = await tb.last_trades(ticker, "TQBR", from_dt, now)
+    parts = _aggregate_trades(trades)
+    if parts:
+        ds.add_traded_sync(ticker, parts)
+        log.debug("poller %s: проторговано на уровнях: %s групп", ticker, len(parts))
+    last_time = max((t["time"] for t in trades), default=None)
+    ds.set_trades_cursor_sync(
+        ticker, (last_time or now).astimezone(UTC).isoformat())
+
+
 async def _poll_cycle():
     tickers = read_tickers()
     if not tickers:
@@ -78,6 +142,10 @@ async def _poll_cycle():
         except Exception as e:
             # Инструмент не найден, сеть, токен и т.п. — не роняем цикл.
             log.warning("poller %s: %s: %s", tk, type(e).__name__, e)
+        try:
+            await _accumulate_trades(tk)
+        except Exception as e:
+            log.warning("poller %s: лента сделок: %s: %s", tk, type(e).__name__, e)
 
 
 async def _run():

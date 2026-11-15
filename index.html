@@ -92,19 +92,23 @@ async function jget(url){const r=await fetch(url);if(!r.ok){const t=await r.text
 
 function renderDens(rows){
   if(!rows.length){$('dens').innerHTML='<p style="color:var(--muted);margin:0">Пока нет данных — копятся поллером во время торгов.</p>';return}
-  let h='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th><th>Съедено</th><th>R/avg</th><th>Статус</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th><th>Съедено</th><th>Факт</th><th>R/avg</th><th>Статус</th></tr></thead><tbody>';
   for(const r of rows){
     const cls=r.side==='bid'?'bid':'ask';
     const pct=r.eaten_pct||0;
     const pCls=pct>70?'p-high':pct>30?'p-mid':'p-low';
     const pctTxt=pct>0?`<span class="pct">${pct.toFixed(0)}%</span>`:'';
     const bar=pct>0?`<span class="bar ${pCls}"><i style="width:${Math.min(pct,100)}%"></i></span>`:'';
+    // Факт = реальные сделки по цене уровня (лента), а не оценка из стакана.
+    const tr=r.traded||0, trPct=r.traded_pct||0;
+    const trTxt=tr>0?`${fmtInt(tr)} <span class="pct">${trPct.toFixed(0)}%</span>`:'—';
     h+=`<tr class="${r.is_super?'super':''}">
       <td class="ticker">${r.ticker}</td>
       <td class="${cls}">${r.side==='bid'?'🟢':'🔴'}</td>
       <td class="${cls}">${fmt(r.price)}</td>
       <td><b>${fmtInt(r.size)}</b></td>
       <td class="eaten-cell">${fmtEaten(r.eaten)}${pctTxt}${bar}</td>
+      <td class="eaten-cell">${trTxt}</td>
       <td>${fmt(r.ratio)}</td>
       <td class="${r.active?'active':'gone'}">${r.is_super?'💥 ':''}${r.status||(r.active?'активна':'ушла')}</td></tr>`;
   }

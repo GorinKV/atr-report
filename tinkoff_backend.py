@@ -245,6 +245,20 @@ def _get_last_trades_sync(figi, from_dt, to_dt):
         )
 
 
+async def last_trades(ticker: str, class_code: str,
+                      from_dt, to_dt) -> list[dict]:
+    """Сырая лента сделок для поллера: [{time, price, quantity, direction}].
+
+    direction — OrderDirection (BUY=1, SELL=2): SELL исполняется
+    по бидам, BUY — по аскам.
+    """
+    figi = await _find_figi(ticker.upper(), class_code)
+    resp = await asyncio.to_thread(_get_last_trades_sync, figi, from_dt, to_dt)
+    return [{"time": t.time, "price": _to_float(t.price),
+             "quantity": t.quantity, "direction": int(t.direction)}
+            for t in resp.trades]
+
+
 @router.get("/trades", response_model=TradesResponse)
 async def trades_get(
     ticker: str = Query("SBER"),
