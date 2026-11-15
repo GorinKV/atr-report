@@ -1,0 +1,19 @@
+{
+  "mode": "24_7",
+  "weekdays": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "session_start": null,
+  "session_end": null,
+  "break_start": "02:55",
+  "break_end": "03:05",
+  "verified_at": "2026-11-15T21:20:09+03:00",
+  "verified_by": "schedule_checker: минутные свечи SBER (T-Invest + ISS) за 2026-11-07..2026-11-14; изменено: mode, session_start, session_end",
+  "note": "MOEX торгует круглосуточно 7 дней в неделю; технический перерыв ~02:58-03:00 МСК (не формируется минутная свеча 02:59). Поля: mode 24_7 | window (тогда weekdays + session_start/session_end обязательны); break_start/break_end — окно паузы поллера и ночная чистка (МСК)."
+}

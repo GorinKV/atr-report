@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import pymysql
 
+import trading_schedule as tsched
 from tinkoff_schemas import DensityEvent
 
 log = logging.getLogger("uvicorn.error")
@@ -466,8 +467,17 @@ def cleanup_nightly_sync() -> str:
             except Exception: pass
 
 
+def _cleanup_target_hm() -> tuple[int, int]:
+    """Момент ночной чистки: начало техперерыва биржи из
+    trading_schedule.json (перечитывается каждый цикл — рынок стоит,
+    чистка не мешает торгам); если в файле не задан — прежние 00:20 МСК.
+    """
+    return tsched.parse_hhmm(tsched.load_schedule().get("break_start")) or (0, 20)
+
+
 def _cleanup_loop():
-    """Спит до 00:20 МСК, чистит, снова спит.
+    """Спит до начала техперерыва (break_start из trading_schedule.json,
+    по умолчанию 00:20 МСК), чистит, снова спит.
 
     Если сервис был выключен ночью и чистка за сегодня не делалась —
     наверстает при старте (окно до 12:00, дата берётся из БД и
@@ -482,7 +492,8 @@ def _cleanup_loop():
             cleanup_nightly_sync()
             _last_cleanup_date = now.date().isoformat()
             continue  # пересчитать следующий таргет уже с датой сегодня
-        target = now.replace(hour=0, minute=20, second=0, microsecond=0)
+        h, m = _cleanup_target_hm()
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
         if now >= target:
             target += timedelta(days=1)
         time.sleep(max(60, (target - now).total_seconds()))

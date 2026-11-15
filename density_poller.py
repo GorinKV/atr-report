@@ -3,13 +3,13 @@
 - Список тикеров читается из poll_tickers.txt (по одному на строке,
   строки с # — комментарии). Файл перечитывается каждый цикл, правки
   подхватываются без рестарта сервиса.
-- Цикл раз в 15 с, КРУГЛОСУТОЧНО, 7 дней в неделю. MOEX расширил торги
-  до 24/7 (проверено по фактическим минутным свечам T-Invest: сессии
-  идут и в субботу, и в воскресенье, ночью до ~02:58 МСК); расписание
-  от trading_schedules при этом недостоверно (is_trading_day=False в
-  торговое воскресенье), поэтому ориентируемся на фактические данные.
-- Пауза только в технический перерыв биржи ~02:58-03:00 МСК
-  (пропадает минутная свеча 02:59).
+- Цикл раз в 15 с, торговое время берётся из trading_schedule.json
+  (перечитывается каждый цикл; правки и еженедельная сверка
+  schedule_checker подхватываются без рестарта сервиса). Сейчас MOEX
+  торгует круглосуточно 7 дней в неделю (проверено по фактическим
+  минутным свечам; trading_schedules от T-Invest недостоверен).
+- Пауза только в технический перерыв биржи (break_start/break_end
+  из trading_schedule.json, сейчас ~02:55-03:05 МСК).
 - Каждый тикер опрашивается через tinkoff_backend.orderbook_snapshot
   (порог плотности 1.5x, глубина 20) — новые плотности попадают в
   историю: in-memory буфер и MariaDB, если настроена.
@@ -19,6 +19,7 @@ import logging
 from pathlib import Path
 
 import tinkoff_backend as tb
+import trading_schedule as tsched
 
 log = logging.getLogger("uvicorn.error")
 
@@ -26,10 +27,6 @@ POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
 POLL_INTERVAL = 15.0       # сек между циклами
 POLL_DEPTH = 20
 POLL_DENSITY_K = 1.5       # чувствительный порог: ловит и плотности, и супер
-# Технический перерыв биржи: свеча 02:59 МСК не формируется,
-# сессия закрывается ~02:58 и открывается ~03:00.
-MAINT_START_H, MAINT_START_M = 2, 55
-MAINT_END_H, MAINT_END_M = 3, 5
 
 _task: asyncio.Task | None = None
 
@@ -46,12 +43,26 @@ def read_tickers() -> list[str]:
 
 
 def _is_trading_time() -> bool:
-    """Торгуем круглосуточно, кроме технического перерыва биржи."""
+    """Торговое время по trading_schedule.json (перечитывается каждый
+    цикл): mode 24_7 — всегда, кроме техперерыва; window — окно сессии
+    в торговые дни недели; в обоих режимах пауза на техперерыв биржи."""
+    sched = tsched.load_schedule()
     now = tb._msk_now()
-    minutes = now.hour * 60 + now.minute
-    start = MAINT_START_H * 60 + MAINT_START_M
-    end = MAINT_END_H * 60 + MAINT_END_M
-    return not (start <= minutes < end)
+    minute = now.hour * 60 + now.minute
+
+    if sched["mode"] != "24_7":
+        if now.weekday() not in sched.get("weekdays", []):
+            return False
+        st = tsched.parse_hhmm(sched.get("session_start"))
+        en = tsched.parse_hhmm(sched.get("session_end"))
+        if st and en and not tsched.in_window(st, en, minute):
+            return False
+
+    bs = tsched.parse_hhmm(sched.get("break_start"))
+    be = tsched.parse_hhmm(sched.get("break_end"))
+    if bs and be and tsched.in_window(bs, be, minute):
+        return False  # технический перерыв биржи
+    return True
 
 
 async def _poll_cycle():
