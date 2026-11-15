@@ -79,28 +79,62 @@ _HIT_IF_SQL = ("hits = hits + IF(VALUES(last_qty) < last_qty * 0.9"
 _levels_ready = False  # ensure-миграция выполнена в этом процессе
 
 
+def _meta_ensure(conn) -> None:
+    """Служебная таблица маркеров (дата чистки, факт миграции v1->v2)."""
+    with conn.cursor() as c:
+        c.execute("CREATE TABLE IF NOT EXISTS density_meta ("
+                  " k VARCHAR(64) PRIMARY KEY, v VARCHAR(255) NOT NULL)")
+
+
+def _meta_get(conn, key: str) -> str | None:
+    with conn.cursor() as c:
+        c.execute("SELECT v FROM density_meta WHERE k = %s", (key,))
+        r = c.fetchone()
+    return r[0] if r else None
+
+
+def _meta_set(conn, key: str, value: str) -> None:
+    with conn.cursor() as c:
+        c.execute("INSERT INTO density_meta (k, v) VALUES (%s, %s)"
+                  " ON DUPLICATE KEY UPDATE v = VALUES(v)", (key, value))
+
+
 def ensure_levels_sync(conn) -> None:
-    """Создаёт density_levels_v2 и один раз переносит данные из v1.
+    """Создаёт density_levels_v2 и ОДИН РАЗ переносит данные из v1.
 
     Право ALTER у atr_report нет, поэтому миграция — копия строк
     (CREATE + INSERT IGNORE SELECT), дубликаты пропускаются по UNIQUE.
     В v1 уровни, исчезнувшие из стакана, обнулялись (last_qty=0) —
     при переносе такие помечаются gone=1, «съедено» для них равно max.
+
+    Важно: копия выполняется один раз за всю жизнь БД (маркер
+    levels_v2_migrated в density_meta), а не при каждом старте
+    сервиса — иначе ночная чистка, удалившая уровни из v2,
+    «воскрешала» бы их из v1 при каждом рестарте.
     """
     global _levels_ready
     if _levels_ready:
         return
+    _meta_ensure(conn)
     with conn.cursor() as c:
         c.execute(_LEVELS_TABLE_SQL)
-        c.execute("SHOW TABLES LIKE 'density_levels'")
-        if c.fetchone():
-            c.execute(
-                "INSERT IGNORE INTO density_levels_v2"
-                " (ticker, side, price, first_ts, last_ts, max_qty, last_qty,"
-                "  max_ratio, is_super, hits, gone)"
-                " SELECT ticker, side, price, first_ts, last_ts, max_qty, last_qty,"
-                "        max_ratio, is_super, 0, (last_qty = 0)"
-                " FROM density_levels")
+    if _meta_get(conn, "levels_v2_migrated") != "1":
+        with conn.cursor() as c:
+            c.execute("SHOW TABLES LIKE 'density_levels'")
+            if c.fetchone():
+                c.execute(
+                    "INSERT IGNORE INTO density_levels_v2"
+                    " (ticker, side, price, first_ts, last_ts, max_qty, last_qty,"
+                    "  max_ratio, is_super, hits, gone)"
+                    " SELECT ticker, side, price, first_ts, last_ts, max_qty, last_qty,"
+                    "        max_ratio, is_super, 0, (last_qty = 0)"
+                    " FROM density_levels")
+                # v1 больше не источник: чистим, чтобы повторная копия
+                # (даже при утере маркера) не воскрешала удалённые уровни.
+                c.execute("DELETE FROM density_levels")
+            _meta_set(conn, "levels_v2_migrated", "1")
+        log.info("density_store: миграция v1 -> v2 выполнена (однократно)")
+    with conn.cursor() as c:
         c.execute("SELECT COUNT(*) FROM density_levels_v2")
         n = c.fetchone()[0]
     log.info("density_store: таблица уровней v2 готова, строк: %s", n)
@@ -353,6 +387,23 @@ _last_cleanup_date = None  # дата последней ночной очист
 _cleanup_started = False   # флаг запуска потока ночной очистки
 
 
+def _read_last_cleanup_date() -> str | None:
+    """Дата последней чистки из БД (переживает рестарты сервиса)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return None
+        _meta_ensure(conn)
+        return _meta_get(conn, "last_cleanup_date")
+    except Exception:
+        return None
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
 def cleanup_nightly_sync() -> str:
     """Чистка истории: события за прошлый день — только топ-5 по объёму
     (более старые дни удаляются совсем), уровни — топ-15 по крутости
@@ -399,7 +450,8 @@ def cleanup_nightly_sync() -> str:
                           lvl_keep)
             else:
                 c.execute("DELETE FROM density_levels_v2")
-        _last_cleanup_date = today
+        _last_cleanup_date = today.isoformat()
+        _meta_set(conn, "last_cleanup_date", today.isoformat())
         msg = (f"очистка: уровней осталось {len(lvl_keep)},"
                f" событий прошлого дня — топ-{kept_events}")
         log.info("density_store: %s", msg)
@@ -415,15 +467,20 @@ def cleanup_nightly_sync() -> str:
 
 
 def _cleanup_loop():
-    """Спит до 00:20 МСК, чистит, снова спит. Если сервис перезапущен
-    ночью (до 06:00) и очистка за сегодня ещё не делалась — наверстает
-    сразу при старте."""
+    """Спит до 00:20 МСК, чистит, снова спит.
+
+    Если сервис был выключен ночью и чистка за сегодня не делалась —
+    наверстает при старте (окно до 12:00, дата берётся из БД и
+    переживает рестарты; раньше терялась при рестарте и пропущенная
+    ночная чистка оставалась навсегда несделанной).
+    """
     global _last_cleanup_date
+    _last_cleanup_date = _read_last_cleanup_date()
     while True:
         now = datetime.now(MSK).replace(tzinfo=None)
-        if now.hour < 6 and _last_cleanup_date != now.date():
+        if now.hour < 12 and _last_cleanup_date != now.date().isoformat():
             cleanup_nightly_sync()
-            _last_cleanup_date = now.date()
+            _last_cleanup_date = now.date().isoformat()
             continue  # пересчитать следующий таргет уже с датой сегодня
         target = now.replace(hour=0, minute=20, second=0, microsecond=0)
         if now >= target:
