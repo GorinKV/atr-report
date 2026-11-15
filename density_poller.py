@@ -1,9 +1,15 @@
 """Фоновый поллер стакана: накапливает историю плотностей без браузера.
 
-- Список тикеров читается из poll_tickers.txt (по одному на строку,
+- Список тикеров читается из poll_tickers.txt (по одному на строке,
   строки с # — комментарии). Файл перечитывается каждый цикл, правки
   подхватываются без рестарта сервиса.
-- Цикл раз в 15 с, только в торговое время: пн-пт, 06:50-23:50 МСК.
+- Цикл раз в 15 с, КРУГЛОСУТОЧНО, 7 дней в неделю. MOEX расширил торги
+  до 24/7 (проверено по фактическим минутным свечам T-Invest: сессии
+  идут и в субботу, и в воскресенье, ночью до ~02:58 МСК); расписание
+  от trading_schedules при этом недостоверно (is_trading_day=False в
+  торговое воскресенье), поэтому ориентируемся на фактические данные.
+- Пауза только в технический перерыв биржи ~02:58-03:00 МСК
+  (пропадает минутная свеча 02:59).
 - Каждый тикер опрашивается через tinkoff_backend.orderbook_snapshot
   (порог плотности 1.5x, глубина 20) — новые плотности попадают в
   историю: in-memory буфер и MariaDB, если настроена.
@@ -20,8 +26,10 @@ POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
 POLL_INTERVAL = 15.0       # сек между циклами
 POLL_DEPTH = 20
 POLL_DENSITY_K = 1.5       # чувствительный порог: ловит и плотности, и супер
-SESSION_START_H, SESSION_START_M = 6, 50   # 06:50 МСК
-SESSION_END_H, SESSION_END_M = 23, 50      # 23:50 МСК
+# Технический перерыв биржи: свеча 02:59 МСК не формируется,
+# сессия закрывается ~02:58 и открывается ~03:00.
+MAINT_START_H, MAINT_START_M = 2, 55
+MAINT_END_H, MAINT_END_M = 3, 5
 
 _task: asyncio.Task | None = None
 
@@ -38,11 +46,12 @@ def read_tickers() -> list[str]:
 
 
 def _is_trading_time() -> bool:
+    """Торгуем круглосуточно, кроме технического перерыва биржи."""
     now = tb._msk_now()
-    if now.weekday() >= 5:  # сб/вс
-        return False
     minutes = now.hour * 60 + now.minute
-    return (SESSION_START_H * 60 + SESSION_START_M) <= minutes < (SESSION_END_H * 60 + SESSION_END_M)
+    start = MAINT_START_H * 60 + MAINT_START_M
+    end = MAINT_END_H * 60 + MAINT_END_M
+    return not (start <= minutes < end)
 
 
 async def _poll_cycle():
