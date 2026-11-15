@@ -1,5 +1,7 @@
 import pytest
+
 from atr_backend import calculate_atr, classify
+
 
 def get_last_val(result):
     """Вспомогательная функция: достает последнее число, если вернулся Series"""
