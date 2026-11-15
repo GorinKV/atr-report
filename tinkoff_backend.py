@@ -276,7 +276,9 @@ async def trades_get(
     prices = [t["price"] for t in trades]
     avg_qty = sum(t["quantity"] for t in trades) / len(trades)
 
-    enriched: list[TradePrint] = []
+    # enriched — список словарей сделок с добавленным полем side
+    # (TradePrint тут не подходит: ниже идёт обращение t["price"]).
+    enriched: list[dict] = []
     for i, t in enumerate(trades):
         if i == 0:
             side = "unknown"

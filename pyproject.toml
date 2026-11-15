@@ -22,5 +22,7 @@ no_implicit_optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["."]          # корень проекта в sys.path, чтобы conftest не хакал sys.path
 addopts = "-q"
+asyncio_mode = "auto"       # async-тесты без явного @pytest.mark.asyncio
+filterwarnings = ["ignore::DeprecationWarning"]
