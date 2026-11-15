@@ -87,3 +87,22 @@ class ATRResponse(BaseModel):
     by_day: list[DayStat] = Field(default_factory=list)
     by_hour: dict[str, int] = Field(default_factory=dict)
     by_hour_super: dict[str, int] = Field(default_factory=dict)
+
+
+class TrendItem(BaseModel):
+    """Признак тренда по EMA: все EMA (7, 14, 100) НИЖЕ текущей цены —
+    тренд вверх (рост); все ВЫШЕ — вниз; иначе тренда нет."""
+    ticker: str
+    price: float | None = None    # текущая цена (close последней свечи)
+    ema7: float | None = None
+    ema14: float | None = None
+    ema100: float | None = None
+    trend: str = ""               # "up" | "down" | "" (нет тренда)
+    candles: int = 0              # сколько свечей в расчёте
+
+
+class TrendsResponse(BaseModel):
+    generated_at: str
+    interval: int
+    days_back: int
+    items: list[TrendItem]

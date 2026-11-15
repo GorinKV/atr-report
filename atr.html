@@ -129,9 +129,32 @@ async function load(){
     if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}
       setStatus('Ошибка: '+m,'error');summaryEl.innerHTML='';tableWrap.innerHTML='';distWrap.innerHTML='';
       $('spikes-wrap').innerHTML='';spikeData=null;$('data-note').style.display='none';return}
-    render(await r.json());setStatus(null);
+    const data=await r.json();
+    render(data);setStatus(null);
+    loadTrend(data,p);   // тренд по EMA — независимо, ошибка не ломает отчёт
   }catch(e){setStatus('Сеть/сервер: '+e.message,'error')}
   finally{btn.disabled=false}
+}
+// Признак тренда: EMA 7, 14 и 100 все НИЖЕ текущей цены — рост (вверх);
+// все ВЫШЕ — вниз; иначе тренда нет.
+async function loadTrend(data,p){
+  try{
+    const q=new URLSearchParams({tickers:data.ticker, board:p.get('board')||'TQBR'});
+    const r=await fetch('/api/atr/trend?'+q);
+    if(!r.ok)return;
+    const d=await r.json();
+    const it=d.items&&d.items[0];
+    if(!it)return;
+    const up=it.trend==='up', down=it.trend==='down';
+    const color=up?'var(--green)':down?'var(--red)':'var(--muted)';
+    const icon=up?'📈 ▲ вверх':down?'📉 ▼ вниз':'➖ тренда нет';
+    const rule=up?'EMA 7/14/100 ниже цены':down?'EMA 7/14/100 выше цены':'не все EMA по одну сторону цены';
+    const emas='EMA7 '+(it.ema7??'—')+' · EMA14 '+(it.ema14??'—')+' · EMA100 '+(it.ema100??'—')+' · цена '+(it.price??'—');
+    summaryEl.insertAdjacentHTML('beforeend',
+      `<div class="card" title="${emas}"><div class="k">Тренд (EMA 7/14/100)</div>
+       <div class="v" style="color:${color}">${icon}</div>
+       <div style="font-size:11px;color:var(--muted);margin-top:2px">${rule}</div></div>`);
+  }catch(e){}
 }
 function render(data){
   const s=data.summary;

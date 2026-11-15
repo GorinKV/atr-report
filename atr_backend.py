@@ -1,5 +1,6 @@
 import asyncio
 import math
+import time
 from datetime import date as _date
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +17,8 @@ from atr_schemas import (
     DayStat,
     SpikeItem,
     SpikesResponse,
+    TrendItem,
+    TrendsResponse,
 )
 
 router = APIRouter(prefix="/api/atr", tags=["atr"])
@@ -242,7 +245,6 @@ async def spikes_get(
 async def atr_report_post(req: ATRRequest) -> ATRResponse:
     return await _run_report(req)
 
-
 @router.get("/report", response_model=ATRResponse)
 async def atr_report_get(ticker: str = Query("SBER"), engine: str = Query("stock"),
     market: str = Query("shares"), board: str = Query("TQBR"),
@@ -254,3 +256,93 @@ async def atr_report_get(ticker: str = Query("SBER"), engine: str = Query("stock
         except ValueError: raise HTTPException(400, "report_date: YYYY-MM-DD") from None
     return await _run_report(ATRRequest(ticker=ticker, engine=engine, market=market,
         board=board, interval=interval, atr_period=atr_period, days_back=days_back, report_date=rd))
+
+
+# ============================================================
+# Признак тренда: EMA 7/14/100 против текущей цены
+# ============================================================
+def calculate_ema(close: pd.Series, period: int) -> pd.Series:
+    """EMA с периодом period по close (как в терминалах: span)."""
+    return close.ewm(span=period, adjust=False).mean()
+
+
+def build_trend_item(ticker: str, df: pd.DataFrame) -> TrendItem:
+    """Тренд по последним свечам df. Чистая функция — тестируется без сети.
+
+    Правило пользователя: EMA7, EMA14, EMA100 все НИЖЕ текущей цены →
+    тренд вверх (рост); все ВЫШЕ → вниз; иначе тренда нет.
+    """
+    close = df["close"]
+    price = round(float(close.iloc[-1]), 6)
+
+    def ema(period: int) -> float | None:
+        if len(close) < period:
+            return None
+        return round(float(calculate_ema(close, period).iloc[-1]), 6)
+
+    e7, e14, e100 = ema(7), ema(14), ema(100)
+    if e7 is None or e14 is None or e100 is None:
+        trend = ""
+    elif e7 < price and e14 < price and e100 < price:
+        trend = "up"
+    elif e7 > price and e14 > price and e100 > price:
+        trend = "down"
+    else:
+        trend = ""
+    return TrendItem(ticker=ticker, price=price, ema7=e7, ema14=e14,
+                     ema100=e100, trend=trend, candles=len(df))
+
+
+# Кэш трендов: страницы дергают батч каждые 15 с, ISS — не нужно.
+TREND_TTL = 60.0            # сек
+TREND_MAX_TICKERS = 30
+_trend_cache: dict[tuple, tuple[float, TrendItem]] = {}
+
+
+async def _trend_for(ticker: str, engine: str, market: str, board: str,
+                     interval: int, days_back: int) -> TrendItem:
+    key = (ticker, engine, market, board, interval, days_back)
+    now = time.monotonic()
+    hit = _trend_cache.get(key)
+    if hit and now - hit[0] < TREND_TTL:
+        return hit[1]
+    async with httpx.AsyncClient() as client:
+        raw = await fetch_moex_candles(client, ticker, engine, market,
+                                       board, interval, days_back)
+    df = prepare_ohlc(raw)
+    item = build_trend_item(ticker, df) if not df.empty else TrendItem(ticker=ticker)
+    _trend_cache[key] = (now, item)
+    return item
+
+
+@router.get("/trend", response_model=TrendsResponse)
+async def trend_get(
+    tickers: str = Query("SBER", description="список через запятую, до 30"),
+    engine: str = Query("stock"),
+    market: str = Query("shares"),
+    board: str = Query("TQBR"),
+    interval: int = Query(10, ge=1, le=60,
+        description="минут на свечу; EMA по close этих свечей"),
+    days_back: int = Query(3, ge=1, le=90,
+        description="окно истории; EMA100 нужно ≥100 свечей"),
+) -> TrendsResponse:
+    """Признак тренда по EMA 7/14/100 против текущей цены.
+
+    Батч: densities.html запрашивает сразу все тикеры топа. Ошибка по
+    одному тикеру не ломает остальные — тренд будет пустым.
+    """
+    lst = [t.strip().upper() for t in tickers.split(",") if t.strip()][:TREND_MAX_TICKERS]
+    if not lst:
+        raise HTTPException(400, "tickers: пустой список")
+    results = await asyncio.gather(
+        *(_trend_for(t, engine, market, board, interval, days_back) for t in lst),
+        return_exceptions=True)
+    items: list[TrendItem] = []
+    for t, res in zip(lst, results, strict=False):
+        if isinstance(res, BaseException):
+            items.append(TrendItem(ticker=t))
+        else:
+            items.append(res)
+    return TrendsResponse(
+        generated_at=datetime.now(timezone(timedelta(hours=3))).isoformat(timespec="seconds"),
+        interval=interval, days_back=days_back, items=items)
