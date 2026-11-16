@@ -45,6 +45,33 @@
   .status{padding:8px 14px;border-radius:6px;margin:12px 24px 0;font-size:13px;display:none}
   .status.error{display:block;background:#2a1416;color:var(--red);border:1px solid #4a1f22}
   .meta{color:var(--muted);font-size:12px}
+  /* --- модалка «Итоги дня» --- */
+  .modal{position:fixed;inset:0;background:rgba(5,8,12,.72);display:none;z-index:50;padding:24px}
+  .modal.open{display:flex;align-items:flex-start;justify-content:center}
+  .m-box{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+         max-width:1100px;width:100%;max-height:calc(100vh - 48px);overflow:auto;padding:16px 20px 24px}
+  .m-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+  .m-head h2{margin:0;font-size:16px}
+  .m-head .meta{margin-right:auto}
+  .m-btn{background:var(--panel);border:1px solid var(--border);border-radius:6px;
+         padding:6px 14px;color:var(--text);font-size:13px;cursor:pointer}
+  .m-btn:hover{border-color:var(--accent)}
+  .m-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .m-btn.on{border-color:var(--accent);color:var(--accent)}
+  #hist{display:none;margin:0 0 12px;flex-wrap:wrap;gap:8px}
+  #hist.open{display:flex}
+  .h-date{background:#0f1115;border:1px solid var(--border);border-radius:6px;
+          padding:5px 12px;color:var(--text);font-size:12px;cursor:pointer;
+          font-variant-numeric:tabular-nums}
+  .h-date:hover{border-color:var(--accent)}
+  .h-date.sel{border-color:var(--accent);color:var(--accent);font-weight:700}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+  .chip{background:#0f1115;border:1px solid var(--border);border-radius:6px;
+        padding:6px 12px;font-size:12px}
+  .chip b{font-size:14px;font-weight:700}
+  .chip .lbl{color:var(--muted);font-size:11px;display:block}
+  .sec-title{margin:18px 0 8px;font-size:12px;color:var(--muted);
+             text-transform:uppercase;letter-spacing:.5px}
 </style>
 </head>
 <body>
@@ -56,6 +83,7 @@
     <a class="nav" href="/tinkoff.html"><b>Стакан</b> плотности и лента</a>
     <a class="nav" href="/densities.html"><b>Топ плотностей</b> все тикеры</a>
     <a class="nav" href="/docs"><b>API</b> swagger</a>
+    <button class="nav" id="day-btn" style="cursor:pointer;font:inherit"><b>📊 Итоги дня</b> цены и плотности</button>
   </nav>
 </header>
 <div id="status" class="status"></div>
@@ -69,6 +97,21 @@
     <div id="chg"></div>
   </div>
 </main>
+<!-- Модалка «Итоги дня» -->
+<div class="modal" id="day-modal">
+  <div class="m-box">
+    <div class="m-head">
+      <h2>Итоги дня <span class="meta" id="day-date"></span></h2>
+      <span class="meta" id="day-meta"></span>
+      <button class="m-btn primary" id="day-refresh">Обновить</button>
+      <button class="m-btn" id="day-hist-btn">История</button>
+      <button class="m-btn" id="day-close">✕</button>
+    </div>
+    <div id="hist"></div>
+    <div id="day-status" class="status" style="margin:0 0 12px"></div>
+    <div id="day-body"></div>
+  </div>
+</div>
 <script>
 const $=id=>document.getElementById(id);
 const statusEl=$('status');
@@ -131,6 +174,111 @@ function renderChg(rows){
   }
   $('chg').innerHTML=h+'</tbody></table>';
 }
+// ==================== Итоги дня ====================
+const dayModal=$('day-modal');
+function dStatus(m){const el=$('day-status');if(!m){el.className='status';el.textContent='';return}
+  el.className='status error';el.textContent=m}
+function fmtVol(n){if(n===null||n===undefined)return '—';
+  return n>=1e9?(n/1e9).toFixed(1)+' млрд':n>=1e6?(n/1e6).toFixed(1)+' млн':fmtInt(n)}
+function chip(lbl,val){return `<div class="chip"><span class="lbl">${lbl}</span><b>${val}</b></div>`}
+function fmtDateRu(d){return d.slice(8,10)+'.'+d.slice(5,7)+'.'+d.slice(0,4)}
+
+async function loadDates(){
+  try{
+    const d=await jget('/api/day/dates');
+    const h=d.dates.map(x=>
+      `<button class="h-date${x===dayDate?' sel':''}" data-d="${x}">${fmtDateRu(x)}${x===d.today?' (сегодня)':''}</button>`).join('');
+    $('hist').innerHTML=h;
+  }catch(e){$('hist').innerHTML='<span class="meta">История недоступна: '+e.message+'</span>'}
+}
+
+async function loadDaySummary(date){
+  dayDate=date;
+  $('day-date').textContent=fmtDateRu(date)+' · сутки торгов с 03:00 МСК';
+  $('day-meta').textContent='загрузка…';
+  $('day-body').innerHTML='';
+  dStatus(null);
+  try{
+    const d=await jget('/api/day/summary?date='+encodeURIComponent(date));
+    renderSummary(d);
+    $('day-meta').textContent='построено '+d.generated_at.slice(11,19)+' МСК'+
+      (d.db_ok?'':' · БД плотностей недоступна');
+    loadDates();  // подсветить выбранную дату
+  }catch(e){dStatus('Ошибка: '+e.message);$('day-meta').textContent=''}
+}
+
+function renderSummary(d){
+  const c=d.counts;
+  let h='<div class="chips">'+
+    chip('Уровней за день',`${c.levels}${c.super_levels?' · 💥 супер: '+c.super_levels:''}`)+
+    chip('Событий плотностей',`${c.events}${c.events_super?' · супер: '+c.events_super:''}`)+
+    chip('Ударов по уровням',fmtInt(c.hits_total))+
+    chip('Съедено (оценка)',fmtBig(c.eaten_total))+
+    chip('Проторговано (факт)',fmtBig(c.traded_total))+
+    '</div>';
+  if(Object.keys(c.statuses).length)
+    h+='<p class="meta" style="margin:0 0 4px">Статусы уровней: '+
+      Object.entries(c.statuses).map(([k,v])=>`${k} — ${v}`).join(' · ')+'</p>';
+  h+='<div class="sec-title">Цены (топ движений · T-Invest)</div>';
+  if(d.prices.length){
+    h+='<table><thead><tr><th>Тикер</th><th>Открытие</th><th>Закрытие/последняя</th>'+
+      '<th title="к закрытию предыдущих торговых суток">Δ к пред.</th>'+
+      '<th title="от открытия этих суток">Δ от откр.</th><th>Объём, шт</th></tr></thead><tbody>';
+    for(const p of d.prices)
+      h+=`<tr><td class="ticker">${p.ticker}</td><td>${fmt(p.open)}</td><td><b>${fmt(p.close)}</b></td>`+
+        `${pctCell(p.change_pct)}${pctCell(p.change_day_pct)}<td>${fmtVol(p.volume)}</td></tr>`;
+    h+='</tbody></table>';
+  }else h+='<p style="color:var(--muted)">Цены недоступны (T-Invest не вернул дневные свечи).</p>';
+  h+='<div class="sec-title">Плотности, появившиеся в этот день (топ по размеру)</div>';
+  if(d.levels.length){
+    h+='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th>'+
+      '<th>Съедено</th><th>Факт</th><th>R/avg</th><th>Появилась</th><th>Статус</th></tr></thead><tbody>';
+    for(const r of d.levels){
+      const cls=r.side==='bid'?'bid':'ask';
+      const pct=r.eaten_pct||0;
+      const pCls=pct>70?'p-high':pct>30?'p-mid':'p-low';
+      const pctTxt=pct>0?`<span class="pct">${pct.toFixed(0)}%</span>`:'';
+      const bar=pct>0?`<span class="bar ${pCls}"><i style="width:${Math.min(pct,100)}%"></i></span>`:'';
+      const tr=r.traded||0, trPct=r.traded_pct||0;
+      const trTxt=tr>0?`${fmtInt(tr)} <span class="pct">${trPct.toFixed(0)}%</span>`:'—';
+      h+=`<tr class="${r.is_super?'super':''}"><td class="ticker">${r.ticker}</td>`+
+        `<td class="${cls}">${r.side==='bid'?'🟢 bid':'🔴 ask'}</td>`+
+        `<td class="${cls}">${fmt(r.price)}</td><td><b>${fmtInt(r.size)}</b></td>`+
+        `<td class="eaten-cell">${fmtEaten(r.eaten)}${pctTxt}${bar}</td>`+
+        `<td class="eaten-cell">${trTxt}</td><td>${fmt(r.ratio)}</td>`+
+        `<td>${fmtTs(r.first_ts)}</td>`+
+        `<td class="${r.gone?'gone':'active'}">${r.is_super?'💥 ':''}${r.status}</td></tr>`;
+    }
+    h+='</tbody></table>';
+  }else h+='<p style="color:var(--muted);margin:0">Уровней за этот день в БД нет'+
+    ' (после ночной чистки остаются только самые крутые уровни прошлых дней).</p>';
+  h+='<p class="meta" style="margin:14px 0 0">'+d.note+'</p>';
+  $('day-body').innerHTML=h;
+}
+
+let dayDate=null;
+async function openDay(){
+  dayModal.classList.add('open');
+  if(!dayDate){
+    try{const d=await jget('/api/day/dates');dayDate=d.today;}
+    catch(e){dayDate=new Date().toISOString().slice(0,10)}
+  }
+  loadDates();
+  loadDaySummary(dayDate);
+}
+$('day-btn').addEventListener('click',openDay);
+$('day-close').addEventListener('click',()=>dayModal.classList.remove('open'));
+dayModal.addEventListener('click',e=>{if(e.target===dayModal)dayModal.classList.remove('open')});
+$('day-hist-btn').addEventListener('click',()=>{
+  const el=$('hist');el.classList.toggle('open');
+  if(el.classList.contains('open'))loadDates();
+});
+$('hist').addEventListener('click',e=>{
+  const b=e.target.closest('.h-date');if(!b)return;
+  loadDaySummary(b.dataset.d);
+});
+$('day-refresh').addEventListener('click',()=>loadDaySummary(dayDate));
+
 async function load(){
   try{
     const [top, chg] = await Promise.allSettled([

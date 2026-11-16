@@ -7,6 +7,7 @@ import density_poller
 import density_store
 import schedule_checker
 from atr_backend import router as atr_router
+from day_summary import router as day_router
 from moex_backend import router as moex_router
 from tinkoff_backend import router as tinkoff_router
 
@@ -16,6 +17,7 @@ app = FastAPI(title="MOEX ATR + Tinkoff Data")
 app.include_router(atr_router)
 app.include_router(tinkoff_router)
 app.include_router(moex_router)
+app.include_router(day_router)
 
 @app.on_event("startup")
 async def startup():
