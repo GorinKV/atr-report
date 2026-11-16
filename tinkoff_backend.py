@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from t_tech.invest import Client
 from t_tech.invest.schemas import InstrumentIdType
 
+import alerts
 import density_store
 from tinkoff_schemas import (
     DensitiesHistoryResponse,
@@ -174,6 +175,9 @@ async def orderbook_snapshot(ticker: str, class_code: str = "TQBR",
             # слишком частые события, история должна быть значимой.
             if ev["is_super"]:
                 density_store.enqueue_events([ev])
+            # Оповещение о КРУПНОЙ новой плотности (≥DENSITY_MIN, шт);
+            # дубли (API и поллер видят одно и то же) гасит кулдаун.
+            alerts.on_new_density(tk, side, lvl.price, lvl.quantity, lvl.ratio)
     _density_seen[tk] = cur_seen
 
     # Состояние уровней в БД (для топ-25 по размеру и по силе).

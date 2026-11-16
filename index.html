@@ -84,6 +84,7 @@
     <a class="nav" href="/densities.html"><b>Топ плотностей</b> все тикеры</a>
     <a class="nav" href="/docs"><b>API</b> swagger</a>
     <button class="nav" id="day-btn" style="cursor:pointer;font:inherit"><b>📊 Итоги дня</b> цены и плотности</button>
+    <button class="nav" id="bell-btn" style="cursor:pointer;font:inherit" title="Браузерные уведомления: движения ≥2%/10 мин и новые плотности ≥100k. Telegram настраивается в telegram.json"><b>🔔</b> оповещения</button>
   </nav>
 </header>
 <div id="status" class="status"></div>
@@ -298,8 +299,43 @@ $('hist').addEventListener('click',e=>{
 });
 $('day-refresh').addEventListener('click',()=>loadDaySummary(dayDate));
 
-async function load(){
+// ==================== Оповещения (браузер) ====================
+// Лента /api/moex/alerts/recent — то же, что уходит в Telegram.
+// Разрешение запрашивается по клику на 🔔; id последнего показанного —
+// в localStorage, чтобы после перезагрузки страницы не ретранслировать.
+let alertLast=0;
+try{alertLast=parseInt(localStorage.getItem('alerts_last_id')||'0',10)||0}catch(e){}
+async function pollAlerts(){
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
   try{
+    const d=await jget('/api/moex/alerts/recent?after='+alertLast);
+    for(const a of d.alerts){
+      alertLast=a.id;
+      const title=a.kind==='move'?'Движение цены':a.kind==='density'?'Новая плотность':'Оповещение';
+      new Notification(title,{body:a.text.replace(/<[^>]+>/g,''),tag:'atr-'+a.id});
+    }
+    if(d.alerts.length)try{localStorage.setItem('alerts_last_id',String(alertLast))}catch(e){}
+  }catch(e){}
+}
+setInterval(pollAlerts,20000);
+async function skipOldAlerts(){
+  try{
+    const d=await jget('/api/moex/alerts/recent');
+    if(d.alerts.length){
+      alertLast=d.alerts[d.alerts.length-1].id;
+      try{localStorage.setItem('alerts_last_id',String(alertLast))}catch(e){}
+    }
+  }catch(e){}
+}
+$('bell-btn').addEventListener('click',()=>{
+  if(!('Notification' in window)){alert('Браузер не поддерживает уведомления');return}
+  Notification.requestPermission().then(p=>{
+    if(p==='granted'){skipOldAlerts().then(pollAlerts)}
+    else if(p==='denied'){alert('Уведомления запрещены в настройках сайта (иконка 🔒 в адресной строке)')}
+  });
+});
+
+async function load(){  try{
     const [top, chg] = await Promise.allSettled([
       // «Только живые»: серверный фильтр active=1 — без него топ по
       // размеру вытесняют стены прошлых дней, активных в лимите мало

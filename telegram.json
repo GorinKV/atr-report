@@ -1,0 +1,5 @@
+{
+  "bot_token": "",
+  "chat_id": "",
+  "_note": "Оповещения в Telegram. 1) Создайте бота у @BotFather, токен — в bot_token. 2) Напишите боту любое сообщение, затем откройте https://api.telegram.org/bot<ТОКЕН>/getUpdates и возьмите chat->id — в chat_id. Заполнили — сервис подхватит сам (без рестарта), проверить: POST /api/moex/alerts/test"
+}
