@@ -89,7 +89,11 @@
 <div id="status" class="status"></div>
 <main>
   <div class="panel">
-    <h2>Крупные плотности сейчас <a href="/densities.html">полный топ →</a></h2>
+    <h2>Крупные плотности сейчас
+      <label class="meta" style="margin-left:auto;display:flex;align-items:center;gap:4px;cursor:pointer"
+             title="Скрывать ушедшие, снятые и полностью съеденные уровни; сверху — выдержавшие больше ударов">
+        <input type="checkbox" id="dens-live" checked>только живые</label>
+      <a href="/densities.html" style="margin-left:0">полный топ →</a></h2>
     <div id="dens"></div>
   </div>
   <div class="panel">
@@ -133,8 +137,23 @@ function fmtTs(ts){
 }
 async function jget(url){const r=await fetch(url);if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}throw new Error(m)}return r.json()}
 
-function renderDens(rows){
-  if(!rows.length){$('dens').innerHTML='<p style="color:var(--muted);margin:0">Пока нет данных — копятся поллером во время торгов.</p>';return}
+// Последний снимок топа плотностей: переключатель «только живые»
+// перерисовывает панель без нового запроса.
+let lastDens=[];
+function renderDens(allRows){
+  lastDens=allRows;
+  // «Только живые»: убираем ушедшие/снятые/полностью съеденные (это все
+  // уровни с active=false — у активных статус всегда «держится/активна»),
+  // первыми — выдержавшие больше ударов, затем по размеру; показываем
+  // топ-10, как раньше.
+  let rows=lastDens;
+  if($('dens-live') && $('dens-live').checked){
+    rows=lastDens.filter(r=>r.active)
+      .sort((a,b)=>(b.hits||0)-(a.hits||0)||(b.size||0)-(a.size||0));
+    if(rows.length>10)rows=rows.slice(0,10);
+  }
+  if(!rows.length){$('dens').innerHTML='<p style="color:var(--muted);margin:0">'+
+    (lastDens.length?'Активных уровней нет — все ушли/сняты/съедены.':'Пока нет данных — копятся поллером во время торгов.')+'</p>';return}
   let h='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th><th>Съедено</th><th>Факт</th><th>R/avg</th><th>Статус</th></tr></thead><tbody>';
   for(const r of rows){
     const cls=r.side==='bid'?'bid':'ask';
@@ -282,7 +301,8 @@ $('day-refresh').addEventListener('click',()=>loadDaySummary(dayDate));
 async function load(){
   try{
     const [top, chg] = await Promise.allSettled([
-      jget('/api/tinkoff/densities/top?limit=10'),
+      // 25, а не 10: при «только живые» нужен запас, чтобы набрать топ
+      jget('/api/tinkoff/densities/top?limit=25'),
       jget('/api/moex/changes?limit=10'),
     ]);
     if(top.status==='fulfilled') renderDens(top.value.by_size);
@@ -292,6 +312,7 @@ async function load(){
   }catch(e){setStatus('Ошибка: '+e.message)}
 }
 $('status') && load();
+$('dens-live').addEventListener('change',()=>renderDens(lastDens));
 setInterval(()=>{if(document.visibilityState==='visible')load()},15000);
 load();
 </script>
