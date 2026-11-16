@@ -437,9 +437,14 @@ def _level_status(active: bool, hits: int, eaten_pct: float,
     return "ушла"
 
 
-def top_levels_sync(limit: int = 25):
+def top_levels_sync(limit: int = 25, active_only: bool = False):
     """Топ уровней по абсолютному размеру и по относительной силе.
-    Возвращает (by_size, by_ratio, db_ok)."""
+    Возвращает (by_size, by_ratio, db_ok).
+
+    active_only — только уровни в стакане прямо сейчас (gone=0 и видели
+    < 45 с): для панели «только живые» на хабе — без фильтра её топ-10
+    вытесняют гигантские стены прошлых дней.
+    """
     conn = None
     try:
         conn = _connect()
@@ -453,10 +458,17 @@ def top_levels_sync(limit: int = 25):
                 " LEFT JOIN density_traded t"
                 "   ON t.ticker = l.ticker AND t.side = l.side"
                 "  AND t.price = l.price")
+        where = ""
+        args: list = []
+        if active_only:
+            where = " WHERE l.gone = 0 AND l.last_ts >= %s"
+            args.append(datetime.now(MSK).replace(tzinfo=None) - timedelta(seconds=45))
         with conn.cursor() as c:
-            c.execute(base + " ORDER BY l.max_qty DESC LIMIT %s", (limit,))
+            c.execute(base + where + " ORDER BY l.max_qty DESC LIMIT %s",
+                      [*args, limit])
             rows_size = c.fetchall()
-            c.execute(base + " ORDER BY l.max_ratio DESC LIMIT %s", (limit,))
+            c.execute(base + where + " ORDER BY l.max_ratio DESC LIMIT %s",
+                      [*args, limit])
             rows_ratio = c.fetchall()
         now_naive = datetime.now(MSK).replace(tzinfo=None)
 

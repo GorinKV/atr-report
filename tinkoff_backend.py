@@ -353,12 +353,17 @@ async def trades_get(
 @router.get("/densities/top", response_model=TopDensitiesResponse)
 async def densities_top_get(
     limit: int = Query(25, ge=1, le=100),
+    active: bool = Query(False,
+        description="только уровни в стакане сейчас (gone=0, видели <45 с)"),
 ) -> TopDensitiesResponse:
     """Самые большие плотности по всем тикерам из poll_tickers.txt:
     два топа — по абсолютному размеру (объём уровня) и по относительной
     силе (R/avg для своего тикера). Поля eaten — оценка съеденного
-    с уровня объёма (max - текущий); lvl активен, если видели < 45 с."""
-    by_size, by_ratio, db_ok = await asyncio.to_thread(density_store.top_levels_sync, limit)
+    с уровня объёма (max - текущий); lvl активен, если видели < 45 с.
+    active=1 — фильтр «только живые»: без него топ вытесняют стены
+    прошлых дней, и активных уровней в лимите может не остаться."""
+    by_size, by_ratio, db_ok = await asyncio.to_thread(
+        density_store.top_levels_sync, limit, active)
     return TopDensitiesResponse(
         generated_at=_msk_now().isoformat(timespec="seconds"),
         db_ok=db_ok,

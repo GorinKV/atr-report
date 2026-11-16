@@ -301,8 +301,10 @@ $('day-refresh').addEventListener('click',()=>loadDaySummary(dayDate));
 async function load(){
   try{
     const [top, chg] = await Promise.allSettled([
-      // 25, а не 10: при «только живые» нужен запас, чтобы набрать топ
-      jget('/api/tinkoff/densities/top?limit=25'),
+      // «Только живые»: серверный фильтр active=1 — без него топ по
+      // размеру вытесняют стены прошлых дней, активных в лимите мало
+      jget('/api/tinkoff/densities/top?limit='+
+        ($('dens-live').checked?'10&active=1':'25')),
       jget('/api/moex/changes?limit=10'),
     ]);
     if(top.status==='fulfilled') renderDens(top.value.by_size);
@@ -312,7 +314,7 @@ async function load(){
   }catch(e){setStatus('Ошибка: '+e.message)}
 }
 $('status') && load();
-$('dens-live').addEventListener('change',()=>renderDens(lastDens));
+$('dens-live').addEventListener('change',load);
 setInterval(()=>{if(document.visibilityState==='visible')load()},15000);
 load();
 </script>
