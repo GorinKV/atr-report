@@ -37,6 +37,8 @@ log = logging.getLogger("uvicorn.error")
 
 MSK = timezone(timedelta(hours=3))
 CONFIG_FILE = Path(__file__).resolve().parent / "telegram.json"
+# Локальный конфиг с реальным токеном — вне git (шаблон в telegram.json).
+LOCAL_CONFIG_FILE = Path(__file__).resolve().parent / "telegram.local.json"
 
 MOVE_PCT = 2.0          # «большое движение»: |Δ| % за 10 минут
 MOVE_COOLDOWN = 1800    # не чаще раза в 30 мин на тикер
@@ -77,22 +79,27 @@ _telegram_cache: tuple[float, tuple[str, str] | None] | None = None
 
 
 def _telegram_conf() -> tuple[str, str] | None:
-    """(bot_token, chat_id) из telegram.json; кэш 30 с — файл можно
-    заполнить без рестарта сервиса."""
+    """(bot_token, chat_id) из telegram.local.json (реальный конфиг, вне
+    git) или telegram.json (шаблон); кэш 30 с — файл можно заполнить
+    без рестарта сервиса."""
     global _telegram_cache
     now = time.monotonic()
     if _telegram_cache and now - _telegram_cache[0] < 30:
         return _telegram_cache[1]
     conf = None
-    try:
-        raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        tok, chat = str(raw.get("bot_token", "")).strip(), str(raw.get("chat_id", "")).strip()
-        if tok and chat:
-            conf = (tok, chat)
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        log.warning("alerts: telegram.json не читается: %s: %s", type(e).__name__, e)
+    for f in (LOCAL_CONFIG_FILE, CONFIG_FILE):
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8"))
+            tok, chat = str(raw.get("bot_token", "")).strip(), \
+                str(raw.get("chat_id", "")).strip()
+            if tok and chat:
+                conf = (tok, chat)
+                break
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            log.warning("alerts: конфиг Telegram %s не читается: %s: %s",
+                        f.name, type(e).__name__, e)
     _telegram_cache = (now, conf)
     return conf
 

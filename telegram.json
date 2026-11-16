@@ -1,5 +1,5 @@
 {
   "bot_token": "",
   "chat_id": "",
-  "_note": "Оповещения в Telegram. 1) Создайте бота у @BotFather, токен — в bot_token. 2) Напишите боту любое сообщение, затем откройте https://api.telegram.org/bot<ТОКЕН>/getUpdates и возьмите chat->id — в chat_id. Заполнили — сервис подхватит сам (без рестарта), проверить: POST /api/moex/alerts/test"
+  "_note": "Оповещения в Telegram. РЕАЛЬНЫЙ конфиг кладите в telegram.local.json (вне git): bot_token + chat_id. 1) @BotFather -> /newbot -> токен в bot_token. 2) Напишите боту /start, откройте https://api.telegram.org/bot<ТОКЕН>/getUpdates и возьмите chat->id — в chat_id. Подхватится сам (кэш 30 с, без рестарта); проверить: POST /api/moex/alerts/test"
 }
