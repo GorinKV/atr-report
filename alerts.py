@@ -334,7 +334,7 @@ def _check_holds() -> None:
         enqueue(
             "hold",
             f"🛡 <b>{w['ticker']}</b> {lbl} {w['price']:g} — стена держится: "
-            f"{w['hits']:,} ударов ({w['size']:,} шт)".replace(",", " "),
+            f"{w['hits']:,} ударов (порог {w['milestone']} пройден)".replace(",", " "),
             f"hold:{w['ticker']}:{w['side']}:{w['price']:g}:{w['milestone']}",
             0)  # однократность обеспечивает mark_hold_sync
 
