@@ -25,7 +25,7 @@ import density_store as ds
 import moex_backend as mb
 from day_schemas import DayCounts, DayDates, DayLevel, DayPrice, DaySummary
 
-router = APIRouter(prefix="/api/day", tags=["day"])
+router = APIRouter(tags=["day"])
 log = logging.getLogger("uvicorn.error")
 
 MSK = timezone(timedelta(hours=3))

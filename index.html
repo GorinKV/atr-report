@@ -185,7 +185,7 @@ function fmtDateRu(d){return d.slice(8,10)+'.'+d.slice(5,7)+'.'+d.slice(0,4)}
 
 async function loadDates(){
   try{
-    const d=await jget('/api/day/dates');
+    const d=await jget('/api/moex/day/dates');
     const h=d.dates.map(x=>
       `<button class="h-date${x===dayDate?' sel':''}" data-d="${x}">${fmtDateRu(x)}${x===d.today?' (сегодня)':''}</button>`).join('');
     $('hist').innerHTML=h;
@@ -199,7 +199,7 @@ async function loadDaySummary(date){
   $('day-body').innerHTML='';
   dStatus(null);
   try{
-    const d=await jget('/api/day/summary?date='+encodeURIComponent(date));
+    const d=await jget('/api/moex/day/summary?date='+encodeURIComponent(date));
     renderSummary(d);
     $('day-meta').textContent='построено '+d.generated_at.slice(11,19)+' МСК'+
       (d.db_ok?'':' · БД плотностей недоступна');
@@ -260,7 +260,7 @@ let dayDate=null;
 async function openDay(){
   dayModal.classList.add('open');
   if(!dayDate){
-    try{const d=await jget('/api/day/dates');dayDate=d.today;}
+    try{const d=await jget('/api/moex/day/dates');dayDate=d.today;}
     catch(e){dayDate=new Date().toISOString().slice(0,10)}
   }
   loadDates();

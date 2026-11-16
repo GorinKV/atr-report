@@ -17,7 +17,10 @@ app = FastAPI(title="MOEX ATR + Tinkoff Data")
 app.include_router(atr_router)
 app.include_router(tinkoff_router)
 app.include_router(moex_router)
-app.include_router(day_router)
+# Итоги дня под двумя префиксами: /api/day — локальный запуск без nginx,
+# /api/moex/day — через nginx (проксируется только /api/atr|tinkoff|moex).
+app.include_router(day_router, prefix="/api/day")
+app.include_router(day_router, prefix="/api/moex/day")
 
 @app.on_event("startup")
 async def startup():
