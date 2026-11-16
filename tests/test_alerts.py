@@ -94,3 +94,73 @@ class TestIsBroken:
         assert alerts._is_broken("ask", 300.0, 300.5) is True
         assert alerts._is_broken("ask", 300.0, 299.5) is False
         assert alerts._is_broken("ask", 300.0, 300.0) is False
+
+
+def _row5(minutes_ago: float, close: float, vol: int) -> tuple:
+    return (datetime.now(UTC) - timedelta(minutes=minutes_ago),
+            close, close, close, vol)
+
+
+class TestVolSpike:
+    def test_spike_detected(self):
+        rows = [_row5(i, 100.0, 1000) for i in range(25, 0, -1)]
+        rows[-1] = _row5(1.5, 100.0, 6000)   # завершённая минута: 6x среднего
+        res = alerts._vol_spike(rows, datetime.now(UTC))
+        assert res is not None
+        k, vol, avg = res
+        assert abs(k - 6.0) < 1e-9
+        assert vol == 6000
+        assert abs(avg - 1000.0) < 1e-9
+
+    def test_no_spike(self):
+        rows = [_row5(i, 100.0, 1000) for i in range(25, 0, -1)]
+        assert alerts._vol_spike(rows, datetime.now(UTC)) is None
+
+    def test_forming_candle_excluded(self):
+        # последняя (несформированная) свеча не участвует
+        rows = [_row5(i, 100.0, 1000) for i in range(25, 0, -1)]
+        rows.append(_row5(0, 100.0, 100_000))  # текущая минута
+        assert alerts._vol_spike(rows, datetime.now(UTC)) is None
+
+    def test_below_abs_floor(self):
+        rows = [_row5(i, 100.0, 100) for i in range(25, 0, -1)]
+        rows[-1] = _row5(1.5, 100.0, 900)   # 9x, но < VOL_MIN_ABS
+        assert alerts._vol_spike(rows, datetime.now(UTC)) is None
+
+    def test_not_enough_history(self):
+        rows = [_row5(i, 100.0, 1000) for i in range(10, 0, -1)]
+        assert alerts._vol_spike(rows, datetime.now(UTC)) is None
+
+
+class TestRangeCheck:
+    def test_break_up(self):
+        sigs, (h, lo) = alerts._range_check((100.0, 95.0), 100.5, 94.5, 101.0)
+        assert sigs == ["up"]
+        # новый диапазон включает экстремумы и цену
+        assert h == 101.0 and lo == 94.5
+
+    def test_break_down(self):
+        sigs, (h, lo) = alerts._range_check((100.0, 95.0), 99.5, 94.0, 93.5)
+        assert sigs == ["down"]
+        assert h == 100.0 and lo == 93.5
+
+    def test_inside_no_signals(self):
+        sigs, _ = alerts._range_check((100.0, 95.0), 99.5, 95.5, 97.0)
+        assert sigs == []
+
+    def test_no_repeat_after_update(self):
+        # после пробоя диапазон расширился ценой — повтор не приходит
+        _, (h, lo) = alerts._range_check((100.0, 95.0), 100.0, 95.0, 101.0)
+        sigs, _ = alerts._range_check((h, lo), 101.0, 95.0, 101.0)
+        assert sigs == []
+
+
+class TestTrendChange:
+    def test_flip(self):
+        assert alerts._trend_change("up", "down") == "down"
+        assert alerts._trend_change("down", "up") == "up"
+
+    def test_same_and_empty(self):
+        assert alerts._trend_change("up", "up") is None
+        assert alerts._trend_change(None, "up") is None   # первое наблюдение
+        assert alerts._trend_change("up", "") is None     # «тренда нет»

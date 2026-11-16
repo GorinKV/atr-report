@@ -194,7 +194,12 @@ async def orderbook_snapshot(ticker: str, class_code: str = "TQBR",
             await asyncio.to_thread(density_store.upsert_levels_sync, tk, ts_now, level_rows)
         gone = prev_seen - cur_seen
         if gone:
-            await asyncio.to_thread(density_store.mark_levels_gone_sync, tk, list(gone))
+            gone_rows = await asyncio.to_thread(
+                density_store.mark_levels_gone_sync, tk, list(gone))
+            for r in gone_rows:
+                # Крупная стена ушла с фактом проторгованного ≥80% —
+                # «съедена» (поглощение), в отличие от «пробит» по цене.
+                alerts.on_wall_eaten(tk, r)
     except Exception as e:
         logging.getLogger("uvicorn.error").warning(
             "orderbook %s: уровень не сохранён: %s: %s", tk, type(e).__name__, e)

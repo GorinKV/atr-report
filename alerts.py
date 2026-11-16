@@ -19,6 +19,7 @@ orderbook_snapshot при первом появлении уровня плот�
 """
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -47,6 +48,25 @@ FEED_MAX = 200          # размер веб-ленты
 # «Уровень пробит»: ту же планку крупности (≥DENSITY_MIN) пересекает цена.
 WALL_FRESH = 3600       # стена считается актуальной 60 мин после ухода
 BROKEN_COOLDOWN = 600   # страховка от спама, если БД недоступна
+
+# «Уровень держится N ударов»: milestone'ы по числу ударов крупной стены.
+HOLD_MILESTONES = (10, 20, 30, 50)
+
+# «Всплеск объёма»: минутный объём ≥ VOL_K × среднего за VOL_AVG_MIN мин.
+VOL_K = 5.0
+VOL_AVG_MIN = 20        # свечей для средней
+VOL_MIN_ABS = 1000      # и объём не меньше этого (отсечь мусор мелких)
+VOL_COOLDOWN = 600      # не чаще раза в 10 мин на тикер
+
+# «Пробой диапазона дня»: цена выше/ниже наблюдённого max/min суток.
+RANGE_COOLDOWN = 1800   # не чаще раза в 30 мин на тикер и сторону
+
+# «Смена тренда»: EMA 7/14/100 переворот (up <-> down).
+TREND_INTERVAL = 300.0  # проверка раз в 5 мин
+TREND_COOLDOWN = 7200
+
+# «Итоги дня»: ежедневная сводка в Telegram после техперерыва.
+DIGEST_HM = (3, 5)      # 03:05 МСК — техперерыв закончился, сутки закрыты
 
 _lock = threading.Lock()
 _feed: list[dict] = []          # веб-лента: [{id, ts, kind, text}]
@@ -154,6 +174,94 @@ def on_new_density(ticker: str, side: str, price: float,
 # ============================================================
 # Движение: 1-мин свечи T-Invest в фоновом потоке
 # ============================================================
+def _candles1m_sync(figi: str) -> list[tuple]:
+    """Минутные свечи T-Invest за 15 минут:
+    [(время, close, high, low, volume)]."""
+    from t_tech.invest import Client
+    from t_tech.invest.schemas import CandleInterval
+
+    now = datetime.now(UTC)
+    with Client(os.environ["TINKOFF_TOKEN"]) as c:
+        r = c.market_data.get_candles(
+            instrument_id=figi, from_=now - timedelta(minutes=15), to=now,
+            interval=CandleInterval.CANDLE_INTERVAL_1_MIN)
+    out = []
+    for cnd in r.candles:
+        t = cnd.time
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=UTC)
+        out.append((t, mb._to_float(cnd.close), mb._to_float(cnd.high),
+                    mb._to_float(cnd.low), int(cnd.volume)))
+    return out
+
+
+def _vol_spike(rows: list[tuple], now: datetime) -> tuple[float, int, float] | None:
+    """Всплеск объёма (чистая функция): последняя ЗАВЕРШЁННАЯ минутная
+    свеча vs средний объём за предыдущие VOL_AVG_MIN минут.
+
+    Возвращает (кратность, объём, средний) или None.
+    """
+    done = [(t, v) for (t, c, h, lo, v) in rows
+            if t <= now - timedelta(seconds=60)]
+    if len(done) < VOL_AVG_MIN + 1:
+        return None
+    vol = done[-1][1]
+    window = done[-(VOL_AVG_MIN + 1):-1]
+    avg = sum(v for _, v in window) / VOL_AVG_MIN
+    if avg <= 0 or vol < VOL_MIN_ABS:
+        return None
+    k = vol / avg
+    return (k, vol, avg) if k >= VOL_K else None
+
+
+# Диапазон дня: tk -> (дата МСК, high, low); инициализируется дневной
+# свечой (настоящий дневной max/min), дальше уточняется минутными.
+_day_range: dict[str, tuple] = {}
+
+
+def _range_check(prev: tuple[float, float], high: float, low: float,
+                 last: float) -> tuple[list[str], tuple[float, float]]:
+    """Пробой диапазона дня (чистая функция): prev = (high, low)
+    наблюдённого диапазона. Возвращает (["up"|"down"], новый диапазон).
+    Новый max/min включает и экстремумы свечей, и текущую цену —
+    иначе следующий цикл снова «пробивал» бы тот же уровень."""
+    sigs: list[str] = []
+    if last > prev[0]:
+        sigs.append("up")
+    if last < prev[1]:
+        sigs.append("down")
+    return sigs, (max(prev[0], high, last), min(prev[1], low, last))
+
+
+def _check_range(tk: str, figi: str, high: float, low: float,
+                 last: float, today) -> None:
+    """Обновляет диапазон дня тикера и оповещает о пробое."""
+    from day_summary import _day_candles_sync
+    cur = _day_range.get(tk)
+    if cur is None or cur[0] != today:
+        # инициализация — настоящий дневной max/min (перезапуск сервиса
+        # не должен «пробить» диапазон по неполным 15 минутам)
+        h, lo = high, low
+        try:
+            rows = _day_candles_sync(figi, today)
+            row = next((r for r in rows if r[0] == today), None)
+            if row:
+                h, lo = row[3], row[4]
+        except Exception:
+            pass
+        _day_range[tk] = (today, h, lo)
+        return
+    sigs, (h, lo) = _range_check((cur[1], cur[2]), high, low, last)
+    _day_range[tk] = (today, h, lo)
+    for s in sigs:
+        arrow = "📈" if s == "up" else "📉"
+        edge = "максимум" if s == "up" else "минимум"
+        enqueue(
+            "range",
+            f"{arrow} <b>{tk}</b>: пробит {edge} дня (цена {last:g})",
+            f"range:{tk}:{s}", RANGE_COOLDOWN)
+
+
 def _pct10(rows: list[tuple], now: datetime) -> tuple[float, float] | None:
     """(Δ%, цена) за последние 10 минут по минутным свечам [(время, close)]
     — чистая функция для тестов. Δ со знаком: + рост, − падение.
@@ -168,6 +276,25 @@ def _pct10(rows: list[tuple], now: datetime) -> tuple[float, float] | None:
 
 
 _figis: dict[str, str] = {}
+
+
+def on_wall_eaten(ticker: str, row: dict) -> int | None:
+    """Хук: уровень ушёл из стакана. «Стена съедена» — крупная стена
+    (≥DENSITY_MIN), по которой реально проторговано ≥80% размера.
+    В отличие от «пробит» — здесь важен ОБЪЁМ, а не цена."""
+    size = row["max_qty"]
+    if size < DENSITY_MIN:
+        return None
+    traded_pct = row["traded"] / size * 100
+    if traded_pct < 80:
+        return None
+    lbl = "🟢 bid" if row["side"] == "bid" else "🔴 ask"
+    return enqueue(
+        "eaten",
+        f"🧱💥 <b>{ticker}</b> {lbl} {row['price']:g} — стена съедена: "
+        f"факт {traded_pct:.0f}% ({row['traded']:,} шт)".replace(",", " "),
+        f"eaten:{ticker}:{row['side']}:{row['price']:g}",
+        DENSITY_COOLDOWN)
 
 
 def _is_broken(side: str, price: float, last: float) -> bool:
@@ -194,28 +321,60 @@ def _check_walls(ticker: str, last: float) -> None:
             BROKEN_COOLDOWN)
 
 
+def _check_holds() -> None:
+    """«Уровень держится N ударов»: milestone'ы по всем тикерам за цикл."""
+    tks = mb._read_tickers()
+    if not tks:
+        return
+    for w in ds.pending_holds_sync(tks, HOLD_MILESTONES, DENSITY_MIN):
+        if not ds.mark_hold_sync(w["ticker"], w["side"], w["price"],
+                                 w["milestone"]):
+            continue  # уже оповещено
+        lbl = "🟢 bid" if w["side"] == "bid" else "🔴 ask"
+        enqueue(
+            "hold",
+            f"🛡 <b>{w['ticker']}</b> {lbl} {w['price']:g} — стена держится: "
+            f"{w['hits']:,} ударов ({w['size']:,} шт)".replace(",", " "),
+            f"hold:{w['ticker']}:{w['side']}:{w['price']:g}:{w['milestone']}",
+            0)  # однократность обеспечивает mark_hold_sync
+
+
 def _check_moves() -> None:
-    """Один проход: Δ10 мин по тикерам поллера -> оповещения."""
+    """Один проход по тикерам поллера (минутные свечи T-Invest):
+    Δ10 мин, всплеск объёма, пробой диапазона дня, пробитие стен."""
     for tk in mb._read_tickers():
         try:
             figi = _figis.get(tk)
             if not figi:
                 figi = _figis.setdefault(tk, mb._find_figi_sync(tk))
             now = datetime.now(UTC)
-            rows = mb._candles_sync(
-                figi, mb.CandleInterval.CANDLE_INTERVAL_1_MIN,
-                now - timedelta(minutes=15), now)
+            rows = _candles1m_sync(figi)
         except Exception as e:
             log.warning("alerts %s: свечи: %s: %s", tk, type(e).__name__, e)
             continue
-        res = _pct10(rows, now)
+        if not rows:
+            continue
+        try:
+            # пробитие уровня — даже без «движения»
+            _check_walls(tk, rows[-1][1])
+            # всплеск объёма: завершённая минута против средней
+            spike = _vol_spike(rows, now)
+            if spike is not None:
+                k, vol, _avg = spike
+                enqueue(
+                    "volume",
+                    f"🔊 <b>{tk}</b>: объём {vol:,} шт за минуту "
+                    f"({k:.1f}× среднего)".replace(",", " "),
+                    f"volume:{tk}", VOL_COOLDOWN)
+            # пробой диапазона дня (тишина по БД не нужна)
+            today = now.astimezone(MSK).date()
+            _check_range(tk, figi, rows[-1][2], rows[-1][3], rows[-1][1], today)
+        except Exception as e:
+            log.warning("alerts %s: оповещения: %s: %s", tk, type(e).__name__, e)
+        res = _pct10([(t, c) for (t, c, h, lo, v) in rows], now)
         if res is None:
             continue
         pct, last = res
-        try:
-            _check_walls(tk, last)  # пробитие уровня — даже без «движения»
-        except Exception as e:
-            log.warning("alerts %s: стены: %s: %s", tk, type(e).__name__, e)
         if abs(pct) < MOVE_PCT:
             continue
         arrow = "🚀" if pct > 0 else "📉"
@@ -223,6 +382,10 @@ def _check_moves() -> None:
             "move",
             f"{arrow} <b>{tk}</b>: {pct:+.1f}% за 10 мин ({last:g})",
             f"move:{tk}", MOVE_COOLDOWN)
+    try:
+        _check_holds()  # milestone'ы ударов — по всем тикерам за цикл
+    except Exception as e:
+        log.warning("alerts: milestone'ы: %s: %s", type(e).__name__, e)
 
 
 def _mover() -> None:
@@ -234,12 +397,134 @@ def _mover() -> None:
         time.sleep(MOVE_INTERVAL)
 
 
+# ============================================================
+# Смена тренда: EMA 7/14/100 по 10-мин свечам T-Invest
+# ============================================================
+_last_trend: dict[str, str] = {}
+
+
+def _trend_change(prev: str | None, cur: str | None) -> str | None:
+    """Новый тренд, если он сменился (чистая функция). None/пустой
+    «тренда нет» сменой не считается."""
+    if not prev or not cur or prev == cur:
+        return None
+    return cur
+
+
+def _trend_loop() -> None:
+    import pandas as pd
+    from t_tech.invest import Client
+    from t_tech.invest.schemas import CandleInterval
+
+    from atr_backend import build_trend_item
+
+    while True:
+        for tk in mb._read_tickers():
+            try:
+                figi = _figis.get(tk)
+                if not figi:
+                    figi = _figis.setdefault(tk, mb._find_figi_sync(tk))
+                now = datetime.now(UTC)
+                with Client(os.environ["TINKOFF_TOKEN"]) as c:
+                    r = c.market_data.get_candles(
+                        instrument_id=figi, from_=now - timedelta(days=3),
+                        to=now, interval=CandleInterval.CANDLE_INTERVAL_10_MIN)
+                closes = [mb._to_float(x.close) for x in r.candles]
+                if len(closes) < 100:
+                    continue  # EMA100 не прогрета
+                cur = build_trend_item(tk, pd.DataFrame({"close": closes})).trend
+                prev = _last_trend.get(tk)
+                _last_trend[tk] = cur
+                new = _trend_change(prev, cur)
+                if not new:
+                    continue
+                if new == "up":
+                    arrow = "📈 ▲ вверх"
+                else:
+                    arrow = "📉 ▼ вниз"
+                enqueue(
+                    "trend",
+                    f"<b>{tk}</b>: тренд сменился — {arrow} "
+                    f"(EMA 7/14/100)",
+                    f"trend:{tk}", TREND_COOLDOWN)
+            except Exception as e:
+                log.warning("alerts %s: тренд: %s: %s", tk, type(e).__name__, e)
+        time.sleep(TREND_INTERVAL)
+
+
+# ============================================================
+# Итоги дня: ежедневная сводка в Telegram после техперерыва
+# ============================================================
+def _digest_text(day) -> str:
+    """Сводка за сутки day (МСК): цены, плотности, пробитые стены."""
+    from datetime import timedelta as _td
+
+    from day_summary import _day_candles_sync, _db_day_facts
+
+    lines = [f"📊 <b>Итоги дня</b> {day.strftime('%d.%m')} (сутки с 03:00 МСК)"]
+    try:
+        prices = []
+        for tk in mb._read_tickers():
+            try:
+                figi = _figis.get(tk) or _figis.setdefault(
+                    tk, mb._find_figi_sync(tk))
+                rows = _day_candles_sync(figi, day)
+                cur = next((r for r in rows if r[0] == day), None)
+                prev = next((r for r in rows if r[0] == day - _td(days=1)), None)
+                if cur and prev and cur[2] and prev[2]:
+                    pct = (cur[2] - prev[2]) / prev[2] * 100
+                    prices.append((pct, tk, cur[2]))
+            except Exception:
+                continue
+        prices.sort(key=lambda x: -abs(x[0]))
+        if prices:
+            line = " · ".join(
+                f"<b>{tk}</b> {p:+.1f}% ({c:g})" for p, tk, c in prices[:5])
+            lines.append("Цены: " + line)
+    except Exception as e:
+        log.warning("alerts: digest цены: %s: %s", type(e).__name__, e)
+    try:
+        _, counts, _, _db_ok = _db_day_facts(day)
+        traded = f"{counts.traded_total:,}".replace(",", " ")
+        lines.append(f"Плотности: новых уровней {counts.levels} "
+                     f"(супер {counts.super_levels}), событий {counts.events}, "
+                     f"ударов {counts.hits_total}, проторговано {traded} шт")
+    except Exception as e:
+        log.warning("alerts: digest плотности: %s: %s", type(e).__name__, e)
+    try:
+        broken = ds.broken_walls_sync(day)
+        if broken:
+            items = " · ".join(f"{tk} {s} {p:g}" for tk, s, p in broken[:5])
+            lines.append("Пробитые стены: " + items)
+    except Exception as e:
+        log.warning("alerts: digest пробитые: %s: %s", type(e).__name__, e)
+    return "\n".join(lines)
+
+
+def _digest_loop() -> None:
+    while True:
+        now = datetime.now(MSK)
+        target = now.replace(hour=DIGEST_HM[0], minute=DIGEST_HM[1],
+                             second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        time.sleep(max((target - now).total_seconds(), 1))
+        try:
+            day = datetime.now(MSK).date() - timedelta(days=1)
+            enqueue("digest", _digest_text(day), f"digest:{day}", 0)
+        except Exception as e:
+            log.warning("alerts: итоги дня: %s: %s", type(e).__name__, e)
+
+
 def start() -> None:
     """Запустить фоновые потоки оповещений (однократно)."""
     threading.Thread(target=_sender, name="alerts-telegram", daemon=True).start()
     threading.Thread(target=_mover, name="alerts-move", daemon=True).start()
-    log.info("alerts: потоки запущены (движение ≥%.1f%%/10мин, плотность ≥%d шт)",
-             MOVE_PCT, DENSITY_MIN)
+    threading.Thread(target=_trend_loop, name="alerts-trend", daemon=True).start()
+    threading.Thread(target=_digest_loop, name="alerts-digest", daemon=True).start()
+    log.info("alerts: потоки запущены (движение ≥%.1f%%/10мин, плотность ≥%d шт, "
+             "milestone удары %s, объём %.0fx, тренд/5мин, итоги дня %02d:%02d)",
+             MOVE_PCT, DENSITY_MIN, HOLD_MILESTONES, VOL_K, *DIGEST_HM)
 
 
 # ============================================================

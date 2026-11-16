@@ -60,6 +60,18 @@ CREATE TABLE IF NOT EXISTS density_traded (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
 
+# Milestone'ы «уровень держится»: сколько ударов уже выдержала стена
+# (10/20/30/50) — отметка в density_hold, чтобы оповестить однократно.
+_HOLD_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS density_hold (
+    ticker    VARCHAR(16) NOT NULL,
+    side      ENUM('bid','ask') NOT NULL,
+    price     DECIMAL(20,6) NOT NULL,
+    milestone INT NOT NULL,
+    UNIQUE KEY uq_level_ms (ticker, side, price, milestone)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
 # Отметки «уровень пробит» (оповещение раз и навсегда по уровню):
 # UNIQUE не даёт повторного оповещения по той же стене, INSERT IGNORE
 # возвращает факт вставки (rowcount 1 = раньше не пробита).
@@ -185,6 +197,12 @@ def ensure_broken_sync(conn) -> None:
     """Таблица отметок «уровень пробит» (для оповещений)."""
     with conn.cursor() as c:
         c.execute(_BROKEN_TABLE_SQL)
+
+
+def ensure_hold_sync(conn) -> None:
+    """Таблица milestone'ов «уровень держится N ударов»."""
+    with conn.cursor() as c:
+        c.execute(_HOLD_TABLE_SQL)
 
 
 def unbroken_walls_sync(ticker: str, min_size: int,
@@ -458,28 +476,144 @@ def upsert_levels_sync(ticker: str, ts_db: str, levels: list[dict]) -> bool:
             except Exception: pass
 
 
-def mark_levels_gone_sync(ticker: str, gone_keys: list[tuple[str, float]]):
+def mark_levels_gone_sync(ticker: str, gone_keys: list[tuple[str, float]]) -> list[dict]:
     """Уровни исчезли из стакана: gone=1, последний остаток сохраняем.
 
     last_qty намеренно НЕ обнуляется: если остаток к моменту исчезновения
     был ~0 — уровень «полностью съеден»; если большим — его сняли/переставили,
     и съеденным честно считается только то, что реально сняли до ухода.
+
+    Возвращает данные ушедших уровней для оповещений:
+    [{side, price, max_qty, last_qty, hits, traded}].
     """
     if not gone_keys:
-        return
+        return []
+    conn = None
+    out: list[dict] = []
+    try:
+        conn = _connect()
+        if conn is None:
+            return []
+        with conn.cursor() as c:
+            ensure_levels_sync(conn)
+            for side, price in gone_keys:
+                c.execute(
+                    "SELECT l.max_qty, l.last_qty, l.hits, COALESCE(t.traded, 0)"
+                    " FROM density_levels_v2 l"
+                    " LEFT JOIN density_traded t"
+                    "   ON t.ticker = l.ticker AND t.side = l.side"
+                    "  AND t.price = l.price"
+                    " WHERE l.ticker = %s AND l.side = %s AND l.price = %s",
+                    (ticker, side, price))
+                row = c.fetchone()
+                c.execute("UPDATE density_levels_v2 SET gone = 1"
+                          " WHERE ticker = %s AND side = %s AND price = %s",
+                          (ticker, side, price))
+                if row:
+                    out.append({"side": side, "price": float(price),
+                                "max_qty": int(row[0]), "last_qty": int(row[1]),
+                                "hits": int(row[2]), "traded": int(row[3])})
+        return out
+    except Exception as e:
+        log.warning("density_store: mark_gone не удался: %s: %s", type(e).__name__, e)
+        return []
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def pending_holds_sync(tickers: list[str], milestones: tuple[int, ...],
+                       min_size: int) -> list[dict]:
+    """Уровни, достигшие очередного milestone по ударам и ещё не
+    оповещённые: [{ticker, side, price, size, hits, milestone}].
+
+    Только живые (gone=0) крупные стены (max_qty >= min_size): milestone
+    имеет смысл для стоящего защитника; ушедшие стены оповещаются
+    своими типами («съедена»/«пробит»).
+    """
+    if not tickers:
+        return []
     conn = None
     try:
         conn = _connect()
         if conn is None:
-            return
+            return []
+        ensure_hold_sync(conn)
+        ms_union = " UNION ALL ".join(f"SELECT {m} AS ms"
+                                      for m in sorted(milestones))
+        marks = ",".join(["%s"] * len(tickers))
         with conn.cursor() as c:
-            ensure_levels_sync(conn)
-            for side, price in gone_keys:
-                c.execute("UPDATE density_levels_v2 SET gone = 1"
-                          " WHERE ticker = %s AND side = %s AND price = %s",
-                          (ticker, side, price))
+            c.execute(
+                "SELECT l.ticker, l.side, l.price, l.max_qty, l.hits, m.ms"
+                f" FROM density_levels_v2 l"
+                f" JOIN ({ms_union}) m ON m.ms <= l.hits"
+                " LEFT JOIN density_hold h"
+                "   ON h.ticker = l.ticker AND h.side = l.side"
+                "  AND h.price = l.price AND h.milestone = m.ms"
+                f" WHERE l.ticker IN ({marks}) AND l.gone = 0"
+                " AND l.max_qty >= %s AND h.ticker IS NULL"
+                " ORDER BY l.max_qty DESC LIMIT 50", (*tickers, min_size))
+            rows = c.fetchall()
+        return [{"ticker": tk, "side": s, "price": float(p),
+                 "size": int(q), "hits": int(h), "milestone": int(ms)}
+                for tk, s, p, q, h, ms in rows]
     except Exception as e:
-        log.warning("density_store: mark_gone не удался: %s: %s", type(e).__name__, e)
+        log.warning("density_store: milestone ударов: %s: %s",
+                    type(e).__name__, e)
+        return []
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def mark_hold_sync(ticker: str, side: str, price: float,
+                   milestone: int) -> bool:
+    """Отметить milestone оповещённым. True — отмечен сейчас (пора
+    оповещать), False — уже был отмечен."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return False
+        ensure_hold_sync(conn)
+        with conn.cursor() as c:
+            n = c.execute(
+                "INSERT IGNORE INTO density_hold"
+                " (ticker, side, price, milestone) VALUES (%s, %s, %s, %s)",
+                (ticker, side, round(price, 6), milestone))
+        return bool(n)
+    except Exception as e:
+        log.warning("density_store: hold-отметка %s: %s: %s",
+                    ticker, type(e).__name__, e)
+        return False
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def broken_walls_sync(day) -> list[tuple[str, str, float]]:
+    """Стены, пробитые за сутки day (для «итогов дня»):
+    [(ticker, side, price)] в порядке пробития (свежие сверху)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return []
+        ensure_broken_sync(conn)
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT ticker, side, price FROM density_broken"
+                " WHERE broken_ts >= %s AND broken_ts < %s"
+                " ORDER BY broken_ts DESC LIMIT 10",
+                (f"{day} 00:00:00", f"{day + timedelta(days=1)} 00:00:00"))
+            return [(tk, s, float(p)) for tk, s, p in c.fetchall()]
+    except Exception as e:
+        log.warning("density_store: пробитые за %s: %s: %s",
+                    day, type(e).__name__, e)
+        return []
     finally:
         if conn:
             try: conn.close()
