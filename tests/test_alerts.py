@@ -80,3 +80,17 @@ class TestNewDensity:
         # уровень пропал и появился снова: повтор в течение часа гасится
         alerts.on_new_density("VKCO", "ask", 231.2, 150_000, 3.0)
         assert alerts.on_new_density("VKCO", "ask", 231.2, 150_000, 3.0) is None
+
+
+class TestIsBroken:
+    def test_bid_broken_below(self):
+        # bid-уровень — поддержка: пробит, когда цена НИЖЕ
+        assert alerts._is_broken("bid", 300.0, 299.5) is True
+        assert alerts._is_broken("bid", 300.0, 300.5) is False
+        assert alerts._is_broken("bid", 300.0, 300.0) is False  # касание
+
+    def test_ask_broken_above(self):
+        # ask-уровень — сопротивление: пробит, когда цена ВЫШЕ
+        assert alerts._is_broken("ask", 300.0, 300.5) is True
+        assert alerts._is_broken("ask", 300.0, 299.5) is False
+        assert alerts._is_broken("ask", 300.0, 300.0) is False

@@ -60,6 +60,19 @@ CREATE TABLE IF NOT EXISTS density_traded (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """
 
+# Отметки «уровень пробит» (оповещение раз и навсегда по уровню):
+# UNIQUE не даёт повторного оповещения по той же стене, INSERT IGNORE
+# возвращает факт вставки (rowcount 1 = раньше не пробита).
+_BROKEN_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS density_broken (
+    ticker    VARCHAR(16) NOT NULL,
+    side      ENUM('bid','ask') NOT NULL,
+    price     DECIMAL(20,6) NOT NULL,
+    broken_ts DATETIME(0) NOT NULL,
+    UNIQUE KEY uq_level (ticker, side, price)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
 _LEVELS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS density_levels_v2 (
     id        BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -166,6 +179,78 @@ def ensure_traded_sync(conn) -> None:
     """Таблица фактического проторгованного объёма по уровням."""
     with conn.cursor() as c:
         c.execute(_TRADED_TABLE_SQL)
+
+
+def ensure_broken_sync(conn) -> None:
+    """Таблица отметок «уровень пробит» (для оповещений)."""
+    with conn.cursor() as c:
+        c.execute(_BROKEN_TABLE_SQL)
+
+
+def unbroken_walls_sync(ticker: str, min_size: int,
+                        fresh_sec: float) -> list[dict]:
+    """Крупные «живые» стены тикера, ещё не помеченные как пробитые:
+    [{side, price, size}] — max_qty ≥ min_size, стена видна недавно
+    (last_ts в пределах fresh_sec), плотность_broken не содержит.
+
+    Свежесть нужна, чтобы старые замороженные уровни (цена давно ушла)
+    не «пробивались» задним числом: пробитие ловим только если стена
+    была в стакане в пределах окна.
+    """
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return []
+        ensure_broken_sync(conn)
+        fresh = (datetime.now(MSK) - timedelta(seconds=fresh_sec)).replace(
+            tzinfo=None)
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT l.side, l.price, l.max_qty"
+                " FROM density_levels_v2 l"
+                " LEFT JOIN density_broken b"
+                "   ON b.ticker = l.ticker AND b.side = l.side"
+                "  AND b.price = l.price"
+                " WHERE l.ticker = %s AND l.max_qty >= %s AND l.last_ts >= %s"
+                " AND b.ticker IS NULL"
+                " ORDER BY l.max_qty DESC LIMIT 50", (ticker, min_size, fresh))
+            return [{"side": s, "price": float(p), "size": int(q)}
+                    for s, p, q in c.fetchall()]
+    except Exception as e:
+        log.warning("density_store: стены %s: %s: %s",
+                    ticker, type(e).__name__, e)
+        return []
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def mark_broken_sync(ticker: str, side: str, price: float) -> bool:
+    """Пометить уровень пробитым (INSERT IGNORE). True — помечен сейчас,
+    False — уже был отмечен раньше (повторное оповещение не нужно)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return False
+        ensure_broken_sync(conn)
+        ts = datetime.now(MSK).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+        with conn.cursor() as c:
+            n = c.execute(
+                "INSERT IGNORE INTO density_broken"
+                " (ticker, side, price, broken_ts) VALUES (%s, %s, %s, %s)",
+                (ticker, side, round(price, 6), ts))
+        return bool(n)
+    except Exception as e:
+        log.warning("density_store: пометка пробитого %s: %s: %s",
+                    ticker, type(e).__name__, e)
+        return False
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 
 def add_traded_sync(ticker: str, parts: list[dict]) -> bool:
@@ -583,6 +668,10 @@ def cleanup_nightly_sync() -> str:
                           lvl_keep)
             else:
                 c.execute("DELETE FROM density_levels_v2")
+            # --- отметки «пробит»: старше 7 дней не нужны
+            ensure_broken_sync(conn)
+            c.execute("DELETE FROM density_broken WHERE broken_ts < %s",
+                      (today - timedelta(days=7),))
         _last_cleanup_date = today.isoformat()
         _meta_set(conn, "last_cleanup_date", today.isoformat())
         msg = (f"очистка: уровней осталось {len(lvl_keep)},"

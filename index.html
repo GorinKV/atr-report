@@ -311,7 +311,7 @@ async function pollAlerts(){
     const d=await jget('/api/moex/alerts/recent?after='+alertLast);
     for(const a of d.alerts){
       alertLast=a.id;
-      const title=a.kind==='move'?'Движение цены':a.kind==='density'?'Новая плотность':'Оповещение';
+      const title=a.kind==='move'?'Движение цены':a.kind==='density'?'Новая плотность':a.kind==='broken'?'Уровень пробит':'Оповещение';
       new Notification(title,{body:a.text.replace(/<[^>]+>/g,''),tag:'atr-'+a.id});
     }
     if(d.alerts.length)try{localStorage.setItem('alerts_last_id',String(alertLast))}catch(e){}

@@ -28,6 +28,7 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Query
 
+import density_store as ds
 import moex_backend as mb
 
 router = APIRouter(tags=["alerts"])
@@ -42,6 +43,10 @@ DENSITY_MIN = 100_000   # «крупная плотность»: размер у
 DENSITY_COOLDOWN = 3600 # не чаще раза в час на (тикер, сторона, цена)
 MOVE_INTERVAL = 30.0    # период проверки движений, с
 FEED_MAX = 200          # размер веб-ленты
+
+# «Уровень пробит»: ту же планку крупности (≥DENSITY_MIN) пересекает цена.
+WALL_FRESH = 3600       # стена считается актуальной 60 мин после ухода
+BROKEN_COOLDOWN = 600   # страховка от спама, если БД недоступна
 
 _lock = threading.Lock()
 _feed: list[dict] = []          # веб-лента: [{id, ts, kind, text}]
@@ -165,6 +170,30 @@ def _pct10(rows: list[tuple], now: datetime) -> tuple[float, float] | None:
 _figis: dict[str, str] = {}
 
 
+def _is_broken(side: str, price: float, last: float) -> bool:
+    """Чистая функция: bid-уровень (поддержка) пробит, когда цена ушла
+    НИЖЕ него; ask-уровень (сопротивление) — когда ВЫШЕ. Равенство —
+    ещё не пробитие (цена касается уровня)."""
+    return last < price if side == "bid" else last > price
+
+
+def _check_walls(ticker: str, last: float) -> None:
+    """Крупные свежие стены тикера, которые цена пересекла: оповещение
+    раз и навсегда по уровню (отметка в density_broken)."""
+    for w in ds.unbroken_walls_sync(ticker, DENSITY_MIN, WALL_FRESH):
+        if not _is_broken(w["side"], w["price"], last):
+            continue
+        if not ds.mark_broken_sync(ticker, w["side"], w["price"]):
+            continue  # уже отмечено раньше или БД недоступна
+        lbl = "🟢 bid" if w["side"] == "bid" else "🔴 ask"
+        enqueue(
+            "broken",
+            f"💥 <b>{ticker}</b>: пробит уровень {lbl} {w['price']:g}"
+            f" ({w['size']:,} шт, цена {last:g})".replace(",", " "),
+            f"broken:{ticker}:{w['side']}:{w['price']:g}",
+            BROKEN_COOLDOWN)
+
+
 def _check_moves() -> None:
     """Один проход: Δ10 мин по тикерам поллера -> оповещения."""
     for tk in mb._read_tickers():
@@ -183,6 +212,10 @@ def _check_moves() -> None:
         if res is None:
             continue
         pct, last = res
+        try:
+            _check_walls(tk, last)  # пробитие уровня — даже без «движения»
+        except Exception as e:
+            log.warning("alerts %s: стены: %s: %s", tk, type(e).__name__, e)
         if abs(pct) < MOVE_PCT:
             continue
         arrow = "🚀" if pct > 0 else "📉"
