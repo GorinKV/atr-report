@@ -280,19 +280,30 @@ _figis: dict[str, str] = {}
 
 def on_wall_eaten(ticker: str, row: dict) -> int | None:
     """Хук: уровень ушёл из стакана. «Стена съедена» — крупная стена
-    (≥DENSITY_MIN), по которой реально проторговано ≥80% размера.
-    В отличие от «пробит» — здесь важен ОБЪЁМ, а не цена."""
+    (≥DENSITY_MIN), которую реально просели (остаток ушёл ≥80%) И по
+    которой проторговано ≥80% размера.
+
+    traded копится за ВСЮ жизнь цены (уровень мог переставляться много
+    раз), поэтому:
+    - процент факта ограничен 100 (сверх — признак перестановок);
+    - требуется и eaten_pct ≥80: исчезновение с полным остатком при
+      большом накопленном traded — это «сняли после активности»,
+      а не съели сейчас.
+    """
     size = row["max_qty"]
     if size < DENSITY_MIN:
         return None
-    traded_pct = row["traded"] / size * 100
-    if traded_pct < 80:
+    eaten_pct = (size - row["last_qty"]) / size * 100
+    traded_pct = min(row["traded"] / size * 100, 100.0)
+    if traded_pct < 80 or eaten_pct < 80:
         return None
+    note = " (стена переставлялась)" if row["traded"] > size else ""
     lbl = "🟢 bid" if row["side"] == "bid" else "🔴 ask"
     return enqueue(
         "eaten",
         f"🧱💥 <b>{ticker}</b> {lbl} {row['price']:g} — стена съедена: "
-        f"факт {traded_pct:.0f}% ({row['traded']:,} шт)".replace(",", " "),
+        f"факт {traded_pct:.0f}% ({row['traded']:,} шт){note}".replace(
+            ",", " "),
         f"eaten:{ticker}:{row['side']}:{row['price']:g}",
         DENSITY_COOLDOWN)
 

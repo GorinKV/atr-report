@@ -96,6 +96,59 @@ class TestIsBroken:
         assert alerts._is_broken("ask", 300.0, 300.0) is False
 
 
+class TestWallEaten:
+    """«Стена съедена»: traded копится за всю жизнь цены (уровень мог
+    переставляться), поэтому факт ограничен 100% и требуется реального
+    проседания остатка (eaten_pct ≥80)."""
+
+    def setup_method(self):
+        with alerts._lock:
+            alerts._sent_at.clear()
+
+    def _row(self, max_qty: int, last_qty: int, traded: int) -> dict:
+        return {"side": "ask", "price": 60.95, "max_qty": max_qty,
+                "last_qty": last_qty, "hits": 5, "traded": traded}
+
+    def test_traded_high_but_not_eaten_no_alert(self):
+        # traded >> size (уровень переставлялся), но остаток полон —
+        # «сняли после активности», не съели сейчас
+        size = alerts.DENSITY_MIN
+        r = self._row(size, size, size * 40)
+        assert alerts.on_wall_eaten("VTBR", r) is None
+
+    def test_eaten_capped_and_note(self):
+        # просели до 10% и traded в разы больше размера: факт = 100%,
+        # текст с пометкой «стена переставлялась»
+        size = alerts.DENSITY_MIN
+        traded = size * 40
+        r = self._row(size, size // 10, traded)
+        aid = alerts.on_wall_eaten("VTBR", r)
+        assert aid is not None
+        text = next(a["text"] for a in alerts.recent(0) if a["id"] == aid)
+        assert "факт 100%" in text
+        assert "(стена переставлялась)" in text
+        assert "4000%" not in text
+
+    def test_eaten_without_rearrangement(self):
+        # traded < size: пометки о перестановке нет, факт < 100%
+        size = alerts.DENSITY_MIN
+        r = self._row(size, size // 10, int(size * 0.9))
+        aid = alerts.on_wall_eaten("VTBR", r)
+        assert aid is not None
+        text = next(a["text"] for a in alerts.recent(0) if a["id"] == aid)
+        assert "факт 90%" in text
+        assert "переставлялась" not in text
+
+    def test_small_wall_ignored(self):
+        r = self._row(alerts.DENSITY_MIN - 1, 0, 0)
+        assert alerts.on_wall_eaten("VTBR", r) is None
+
+    def test_traded_below_80_no_alert(self):
+        size = alerts.DENSITY_MIN
+        r = self._row(size, 0, int(size * 0.5))  # просели, но traded < 80%
+        assert alerts.on_wall_eaten("VTBR", r) is None
+
+
 def _row5(minutes_ago: float, close: float, vol: int) -> tuple:
     return (datetime.now(UTC) - timedelta(minutes=minutes_ago),
             close, close, close, vol)
