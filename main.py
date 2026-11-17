@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import density_poller
@@ -44,4 +45,10 @@ async def startup():
 
 # Раздаём HTML-страницы без Nginx — локальный запуск работает из коробки.
 # Роутеры /api/* добавлены выше, поэтому имеют приоритет над монтированием.
+# Дашборд исторически живёт по адресу /hub.html (старый nginx-алиас) —
+# для прямого захода на 9443 и старых закладок отдаём index.html.
+@app.get("/hub.html", include_in_schema=False)
+async def hub_alias():
+    return FileResponse(BASE_DIR / "index.html")
+
 app.mount("/", StaticFiles(directory=BASE_DIR, html=True), name="static")
