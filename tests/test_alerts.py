@@ -208,6 +208,57 @@ class TestRangeCheck:
         assert sigs == []
 
 
+class TestPrevExtreme:
+    """Вчерашний экстремум: из дневных свечей, предыдущий торговый день."""
+
+    def _row(self, d, high, low):
+        from datetime import date as _d
+        return (_d(2026, 11, d), 100.0, 101.0, high, low, 1000)
+
+    def test_previous_trading_day(self):
+        from datetime import date
+        today = date(2026, 11, 17)
+        rows = [self._row(12, 105.0, 100.0),   # позавчера — не берётся
+                self._row(16, 120.0, 115.0),   # последний день до сегодня
+                self._row(17, 130.0, 125.0)]   # сегодня — не берётся
+        assert alerts._prev_from_rows(rows, today) == (120.0, 115.0)
+
+    def test_weekend_gap(self):
+        # пятница перед понедельником: пробел в датах не мешает
+        from datetime import date
+        today = date(2026, 11, 16)  # понедельник
+        rows = [self._row(13, 110.0, 105.0),   # пятница — предыдущий день
+                self._row(16, 130.0, 125.0)]   # сегодня
+        assert alerts._prev_from_rows(rows, today) == (110.0, 105.0)
+
+    def test_no_rows_before(self):
+        from datetime import date
+        assert alerts._prev_from_rows([self._row(17, 1.0, 0.5)],
+                                      date(2026, 11, 17)) == (None, None)
+
+    def test_empty(self):
+        from datetime import date
+        assert alerts._prev_from_rows([], date(2026, 11, 17)) == (None, None)
+
+
+class TestRangeMsg:
+    def test_up_with_yesterday_high(self):
+        msg = alerts._range_msg("SBER", "up", 300.5, (298.1, 290.0))
+        assert "📈" in msg and "SBER" in msg
+        assert "пробит максимум дня" in msg
+        assert "(цена 300.5; вчерашний максимум 298.1)" in msg
+
+    def test_down_with_yesterday_low(self):
+        msg = alerts._range_msg("SBER", "down", 289.2, (298.1, 290.0))
+        assert "📉" in msg and "пробит минимум дня" in msg
+        assert "вчерашний минимум 290" in msg
+
+    def test_unknown_yesterday_omitted(self):
+        msg = alerts._range_msg("SBER", "up", 300.5, (None, None))
+        assert "вчерашний" not in msg
+        assert "(цена 300.5)" in msg
+
+
 class TestTrendChange:
     def test_flip(self):
         assert alerts._trend_change("up", "down") == "down"

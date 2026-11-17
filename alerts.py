@@ -225,6 +225,35 @@ def _vol_spike(rows: list[tuple], now: datetime) -> tuple[float, int, float] | N
 # свечой (настоящий дневной max/min), дальше уточняется минутными.
 _day_range: dict[str, tuple] = {}
 
+# Вчерашний экстремум: tk -> (high, low) предыдущего торгового дня —
+# добавляется в сообщение о пробое («...; вчерашний максимум 298.1»).
+_prev_extreme: dict[str, tuple[float | None, float | None]] = {}
+
+
+def _prev_from_rows(rows, today) -> tuple[float | None, float | None]:
+    """Вчерашний экстремум (чистая функция): (high, low) последней
+    дневной свечи СТРОГО раньше today (предыдущий торговый день —
+    выходные/праздники пропускаются). rows из _day_candles_sync:
+    [(дата, open, close, high, low, volume)]. None — свечей нет."""
+    prev = [r for r in rows if r[0] < today]
+    if not prev:
+        return (None, None)
+    r = max(prev, key=lambda r: r[0])
+    return (r[3], r[4])
+
+
+def _range_msg(tk: str, s: str, last: float,
+               prev: tuple[float | None, float | None]) -> str:
+    """Текст оповещения о пробое максимума/минимума дня (чистая функция):
+    «📈 T: пробит максимум дня (цена 300.5; вчерашний максимум 298.1)».
+    Вчерашний экстремум дописывается, только если он известен."""
+    arrow = "📈" if s == "up" else "📉"
+    edge = "максимум" if s == "up" else "минимум"
+    yv = prev[0] if s == "up" else prev[1]
+    tail = f"; вчерашний {edge} {yv:g}" if yv is not None else ""
+    return (f"{arrow} <b>{tk}</b>: пробит {edge} дня "
+            f"(цена {last:g}{tail})")
+
 
 def _range_check(prev: tuple[float, float], high: float, low: float,
                  last: float) -> tuple[list[str], tuple[float, float]]:
@@ -247,8 +276,10 @@ def _check_range(tk: str, figi: str, high: float, low: float,
     cur = _day_range.get(tk)
     if cur is None or cur[0] != today:
         # инициализация — настоящий дневной max/min (перезапуск сервиса
-        # не должен «пробить» диапазон по неполным 15 минутам)
+        # не должен «пробить» диапазон по неполным 15 минутам); заодно
+        # запоминаем вчерашний экстремум для сообщений о пробое
         h, lo = high, low
+        rows: list[tuple] = []
         try:
             rows = _day_candles_sync(figi, today)
             row = next((r for r in rows if r[0] == today), None)
@@ -257,16 +288,14 @@ def _check_range(tk: str, figi: str, high: float, low: float,
         except Exception:
             pass
         _day_range[tk] = (today, h, lo)
+        _prev_extreme[tk] = _prev_from_rows(rows, today)
         return
     sigs, (h, lo) = _range_check((cur[1], cur[2]), high, low, last)
     _day_range[tk] = (today, h, lo)
     for s in sigs:
-        arrow = "📈" if s == "up" else "📉"
-        edge = "максимум" if s == "up" else "минимум"
-        enqueue(
-            "range",
-            f"{arrow} <b>{tk}</b>: пробит {edge} дня (цена {last:g})",
-            f"range:{tk}:{s}", RANGE_COOLDOWN)
+        enqueue("range", _range_msg(tk, s, last,
+                                    _prev_extreme.get(tk) or (None, None)),
+                f"range:{tk}:{s}", RANGE_COOLDOWN)
 
 
 def _pct10(rows: list[tuple], now: datetime) -> tuple[float, float] | None:
