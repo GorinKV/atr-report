@@ -82,6 +82,7 @@
     <a class="nav" href="/atr.html"><b>ATR</b> всплески и супервсплески</a>
     <a class="nav" href="/tinkoff.html"><b>Стакан</b> плотности и лента</a>
     <a class="nav" href="/densities.html"><b>Топ плотностей</b> все тикеры</a>
+    <a class="nav" href="/futures.html"><b>Фьючерсы</b> нефть, золото, NG…</a>
     <a class="nav" href="/docs"><b>API</b> swagger</a>
     <button class="nav" id="day-btn" style="cursor:pointer;font:inherit"><b>📊 Итоги дня</b> цены и плотности</button>
     <button class="nav" id="bell-btn" style="cursor:pointer;font:inherit" title="Браузерные уведомления: движения ≥2%/10 мин и новые плотности ≥100k. Telegram настраивается в telegram.json"><b>🔔</b> оповещения</button>
@@ -346,7 +347,7 @@ async function load(){  try{
     const [top, chg] = await Promise.allSettled([
       // «Только живые»: серверный фильтр active=1 — без него топ по
       // размеру вытесняют стены прошлых дней, активных в лимите мало
-      jget('/api/tinkoff/densities/top?limit='+
+      jget('/api/tinkoff/densities/top?kind=stocks&limit='+
         ($('dens-live').checked?'10&active=1':'25')),
       jget('/api/moex/changes?limit=10'),
     ]);

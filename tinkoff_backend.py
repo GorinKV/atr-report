@@ -67,6 +67,8 @@ def _find_figi_sync(ticker, class_code):
             return r.instrument.figi
         except Exception:
             # Акции/ETF не нашлись — пробуем ETF, затем фьючерсы.
+            # future_by требует class_code: заданный, затем класс
+            # фьючерсов SPBFUT (акции ищут с TQBR, фьючерсы — SPBFUT).
             try:
                 r = client.instruments.etf_by(
                     id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
@@ -74,11 +76,17 @@ def _find_figi_sync(ticker, class_code):
                 )
                 return r.instrument.figi
             except Exception:
-                r = client.instruments.future_by(
-                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                    id=ticker,
-                )
-                return r.instrument.figi
+                for cc in dict.fromkeys([class_code, "SPBFUT"]):
+                    try:
+                        r = client.instruments.future_by(
+                            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+                            class_code=cc,
+                            id=ticker,
+                        )
+                        return r.instrument.figi
+                    except Exception:
+                        continue
+                raise
 
 
 async def _find_figi(ticker, class_code):
@@ -364,15 +372,23 @@ async def densities_top_get(
     limit: int = Query(25, ge=1, le=100),
     active: bool = Query(False,
         description="только уровни в стакане сейчас (gone=0, видели <45 с)"),
+    kind: str = Query("",
+        description="класс инструментов: пусто — все, "
+                    "'futures' — сырьевые фьючерсы (poll_futures.txt), "
+                    "'stocks' — акции (poll_tickers.txt)"),
 ) -> TopDensitiesResponse:
-    """Самые большие плотности по всем тикерам из poll_tickers.txt:
-    два топа — по абсолютному размеру (объём уровня) и по относительной
-    силе (R/avg для своего тикера). Поля eaten — оценка съеденного
-    с уровня объёма (max - текущий); lvl активен, если видели < 45 с.
+    """Самые большие плотности: два топа — по абсолютному размеру
+    (объём уровня) и по относительной силе (R/avg для своего тикера).
+    kind=futures — страница сырьевых фьючерсов, kind=stocks — акции,
+    пусто — вся вселенная. Поля eaten — оценка съеденного с уровня
+    объёма (max - текущий); lvl активен, если видели < 45 с.
     active=1 — фильтр «только живые»: без него топ вытесняют стены
     прошлых дней, и активных уровней в лимите может не остаться."""
+    from moex_backend import _read_futures, _read_tickers
+    tk_map = {"futures": _read_futures, "stocks": _read_tickers}
+    tickers = tk_map.get(kind.strip().lower(), lambda: None)()
     by_size, by_ratio, db_ok = await asyncio.to_thread(
-        density_store.top_levels_sync, limit, active)
+        density_store.top_levels_sync, limit, active, tickers)
     return TopDensitiesResponse(
         generated_at=_msk_now().isoformat(timespec="seconds"),
         db_ok=db_ok,

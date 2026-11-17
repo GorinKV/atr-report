@@ -656,13 +656,16 @@ def _level_status(active: bool, hits: int, eaten_pct: float,
     return "ушла"
 
 
-def top_levels_sync(limit: int = 25, active_only: bool = False):
+def top_levels_sync(limit: int = 25, active_only: bool = False,
+                    tickers: list[str] | None = None):
     """Топ уровней по абсолютному размеру и по относительной силе.
     Возвращает (by_size, by_ratio, db_ok).
 
     active_only — только уровни в стакане прямо сейчас (gone=0 и видели
     < 45 с): для панели «только живые» на хабе — без фильтра её топ-10
     вытесняют гигантские стены прошлых дней.
+    tickers — фильтр по классу инструментов: список тикеров (акции или
+    фьючерсы), None — все без ограничений.
     """
     conn = None
     try:
@@ -679,9 +682,18 @@ def top_levels_sync(limit: int = 25, active_only: bool = False):
                 "  AND t.price = l.price")
         where = ""
         args: list = []
+        conds = []
         if active_only:
-            where = " WHERE l.gone = 0 AND l.last_ts >= %s"
+            conds.append("l.gone = 0 AND l.last_ts >= %s")
             args.append(datetime.now(MSK).replace(tzinfo=None) - timedelta(seconds=45))
+        if tickers is not None:
+            if not tickers:
+                return [], [], True  # пустой список класса — пустой ответ
+            marks = ",".join(["%s"] * len(tickers))
+            conds.append(f"l.ticker IN ({marks})")
+            args.extend(tickers)
+        if conds:
+            where = " WHERE " + " AND ".join(conds)
         with conn.cursor() as c:
             c.execute(base + where + " ORDER BY l.max_qty DESC LIMIT %s",
                       [*args, limit])

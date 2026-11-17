@@ -22,6 +22,8 @@ UTC = UTC
 
 # Тикеры по умолчанию — тот же список, что опрашивает фоновый поллер.
 POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
+# Сырьевые фьючерсы — отдельный список и отдельная страница futures.html.
+FUT_FILE = Path(__file__).resolve().parent / "poll_futures.txt"
 
 # TTL кэшей, сек: дневные свечи меняются раз в день, 1-мин свечи —
 # в реальном времени (кэш лишь чтобы не долбить API каждые 15 с).
@@ -46,6 +48,25 @@ def _read_tickers() -> list[str]:
     return out
 
 
+def _read_futures() -> list[str]:
+    """Тикеры сырьевых фьючерсов из poll_futures.txt (контракты,
+    например BRZ6 — нефть Brent до 02.12)."""
+    if not FUT_FILE.exists():
+        return []
+    out = []
+    for line in FUT_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip().upper()
+        if line:
+            out.append(line)
+    return out
+
+
+def _read_all_tickers() -> list[str]:
+    """Вся вселенная наблюдения: акции + сырьевые фьючерсы
+    (алерты, итоги дня, тренд — логика та же для обоих классов)."""
+    return _read_tickers() + _read_futures()
+
+
 def _token():
     t = os.environ.get("TINKOFF_TOKEN")
     if not t:
@@ -58,7 +79,9 @@ def _to_float(q):
 
 
 def _find_figi_sync(ticker: str, class_code: str = "TQBR") -> str:
-    """FIGI по тикеру: акции, затем ETF, затем фьючерсы (как в tinkoff_backend)."""
+    """FIGI по тикеру: акции, затем ETF, затем фьючерсы (как в tinkoff_backend).
+    future_by требует class_code: пробуем заданный, затем класс фьючерсов
+    SPBFUT (алерты ищут FIGI фьючерса с классом по умолчанию)."""
     with Client(_token()) as client:
         from t_tech.invest.schemas import InstrumentIdType
         try:
@@ -72,9 +95,15 @@ def _find_figi_sync(ticker: str, class_code: str = "TQBR") -> str:
                     id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER, id=ticker)
                 return r.instrument.figi
             except Exception:
-                r = client.instruments.future_by(
-                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER, id=ticker)
-                return r.instrument.figi
+                for cc in dict.fromkeys([class_code, "SPBFUT"]):
+                    try:
+                        r = client.instruments.future_by(
+                            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
+                            class_code=cc, id=ticker)
+                        return r.instrument.figi
+                    except Exception:
+                        continue
+                raise
 
 
 async def _figi(ticker: str) -> str:

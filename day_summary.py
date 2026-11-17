@@ -114,7 +114,7 @@ async def _prices(day: date_type) -> list[DayPrice]:
     if hit and now - hit[0] < ttl:
         return hit[1]
     rows = await asyncio.gather(
-        *(_price_row(t, day) for t in mb._read_tickers()),
+        *(_price_row(t, day) for t in mb._read_all_tickers()),
         return_exceptions=True)
     out: list[DayPrice] = []
     for r in rows:

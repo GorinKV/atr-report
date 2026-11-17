@@ -26,6 +26,8 @@ import trading_schedule as tsched
 log = logging.getLogger("uvicorn.error")
 
 POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
+FUT_FILE = Path(__file__).resolve().parent / "poll_futures.txt"
+FUT_CLASS = "SPBFUT"       # класс сырьевых фьючерсов на MOEX
 POLL_INTERVAL = 15.0       # сек между циклами
 POLL_DEPTH = 20
 POLL_DENSITY_K = 1.5       # чувствительный порог: ловит и плотности, и супер
@@ -46,6 +48,19 @@ def read_tickers() -> list[str]:
         return []
     out = []
     for line in POLL_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip().upper()
+        if line:
+            out.append(line)
+    return out
+
+
+def read_futures() -> list[str]:
+    """Тикеры сырьевых фьючерсов из poll_futures.txt (контракты,
+    например BRZ6). Опрашиваются тем же циклом, класс SPBFUT."""
+    if not FUT_FILE.exists():
+        return []
+    out = []
+    for line in FUT_FILE.read_text(encoding="utf-8").splitlines():
         line = line.split("#")[0].strip().upper()
         if line:
             out.append(line)
@@ -97,7 +112,7 @@ def _aggregate_trades(trades: list[dict]) -> list[dict]:
             for (s, p), q in agg.items()]
 
 
-async def _accumulate_trades(ticker: str) -> None:
+async def _accumulate_trades(ticker: str, class_code: str = "TQBR") -> None:
     """Факт проторгованного объёма: лента сделок с прошлый курсор.
 
     Курсор хранится в density_meta (переживает рестарты). Первый запуск
@@ -119,7 +134,7 @@ async def _accumulate_trades(ticker: str) -> None:
         from_dt = from_dt.replace(tzinfo=UTC)
     from_dt = max(from_dt, now - TRADES_MAX_BACK)
 
-    trades = await tb.last_trades(ticker, "TQBR", from_dt, now)
+    trades = await tb.last_trades(ticker, class_code, from_dt, now)
     parts = _aggregate_trades(trades)
     if parts:
         ds.add_traded_sync(ticker, parts)
@@ -130,12 +145,16 @@ async def _accumulate_trades(ticker: str) -> None:
 
 
 async def _poll_cycle():
-    tickers = read_tickers()
+    stocks = read_tickers()
+    futures = read_futures()
+    fset = set(futures)
+    tickers = [(tk, FUT_CLASS if tk in fset else "TQBR")
+               for tk in stocks] + [(tk, FUT_CLASS) for tk in futures]
     if not tickers:
         return
-    for tk in tickers:
+    for tk, cls in tickers:
         try:
-            resp = await tb.orderbook_snapshot(tk, "TQBR", POLL_DEPTH, POLL_DENSITY_K)
+            resp = await tb.orderbook_snapshot(tk, cls, POLL_DEPTH, POLL_DENSITY_K)
             n_dens = len(resp.densities)
             if n_dens:
                 log.debug("poller %s: плотностей %s", tk, n_dens)
@@ -143,7 +162,7 @@ async def _poll_cycle():
             # Инструмент не найден, сеть, токен и т.п. — не роняем цикл.
             log.warning("poller %s: %s: %s", tk, type(e).__name__, e)
         try:
-            await _accumulate_trades(tk)
+            await _accumulate_trades(tk, cls)
         except Exception as e:
             log.warning("poller %s: лента сделок: %s: %s", tk, type(e).__name__, e)
 

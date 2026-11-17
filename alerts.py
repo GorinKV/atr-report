@@ -341,7 +341,7 @@ def _check_walls(ticker: str, last: float) -> None:
 
 def _check_holds() -> None:
     """«Уровень держится N ударов»: milestone'ы по всем тикерам за цикл."""
-    tks = mb._read_tickers()
+    tks = mb._read_all_tickers()
     if not tks:
         return
     for w in ds.pending_holds_sync(tks, HOLD_MILESTONES, DENSITY_MIN):
@@ -360,7 +360,7 @@ def _check_holds() -> None:
 def _check_moves() -> None:
     """Один проход по тикерам поллера (минутные свечи T-Invest):
     Δ10 мин, всплеск объёма, пробой диапазона дня, пробитие стен."""
-    for tk in mb._read_tickers():
+    for tk in mb._read_all_tickers():
         try:
             figi = _figis.get(tk)
             if not figi:
@@ -437,7 +437,7 @@ def _trend_loop() -> None:
     from atr_backend import build_trend_item
 
     while True:
-        for tk in mb._read_tickers():
+        for tk in mb._read_all_tickers():
             try:
                 figi = _figis.get(tk)
                 if not figi:
@@ -482,7 +482,7 @@ def _digest_text(day) -> str:
     lines = [f"📊 <b>Итоги дня</b> {day.strftime('%d.%m')} (сутки с 03:00 МСК)"]
     try:
         prices = []
-        for tk in mb._read_tickers():
+        for tk in mb._read_all_tickers():
             try:
                 figi = _figis.get(tk) or _figis.setdefault(
                     tk, mb._find_figi_sync(tk))

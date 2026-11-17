@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>MOEX · Сырьевые фьючерсы</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--bg:#0f1115;--panel:#161a22;--border:#242a36;--text:#d7dbe3;--muted:#7b8494;
+        --accent:#4f9eff;--green:#3fbf7f;--red:#e05b5b;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+       background:var(--bg);color:var(--text);font-size:14px}
+  header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{margin:0;font-size:18px;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  header button{margin-left:auto}
+  nav a{color:var(--accent);text-decoration:none;font-size:13px}
+  nav a:hover{text-decoration:underline}
+  button{background:var(--accent);color:#fff;border:none;padding:8px 18px;border-radius:6px;
+         font-size:13px;font-weight:500;cursor:pointer}
+  button:hover{opacity:.85}
+  button:disabled{opacity:.5;cursor:wait}
+  main{padding:20px 24px 40px}
+  .status{padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;display:none}
+  .status.error{display:block;background:#2a1416;color:var(--red);border:1px solid #4a1f22}
+  .status.info{display:block;background:#14202a;color:var(--accent);border:1px solid #1f3a4a}
+  .note{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  @media(max-width:1100px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+  .panel h2{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--muted);
+            text-transform:uppercase;letter-spacing:.5px}
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+  thead th{text-align:right;padding:7px 8px;border-bottom:1px solid var(--border);color:var(--muted);
+           font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  thead th:first-child,thead th:nth-child(2){text-align:left}
+  tbody td{padding:6px 8px;border-bottom:1px solid #1a1f29;text-align:right}
+  tbody td:first-child,tbody td:nth-child(2){text-align:left}
+  tbody tr:hover{background:#141821}
+  .bid{color:var(--green)} .ask{color:var(--red)}
+  .super{box-shadow:inset 2px 0 0 var(--accent);font-weight:600}
+  .ticker{font-weight:700}
+  .tname{color:var(--muted);font-size:11px;font-weight:400;margin-left:4px}
+  .gone{color:var(--muted)}
+  .active{color:var(--green)}
+  .eaten-cell{white-space:nowrap}
+  .bar{display:inline-block;vertical-align:middle;width:52px;height:6px;border-radius:3px;
+       background:#232936;margin-left:6px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:3px}
+  .p-low i{background:var(--green)} .p-mid i{background:#d8a13a} .p-high i{background:var(--red)}
+  .pct{color:var(--muted);font-size:11px;margin-left:5px}
+  .trend-cell{text-align:center!important}
+  .t-up{color:var(--green);font-weight:700}
+  .t-down{color:var(--red);font-weight:700}
+  .t-flat{color:var(--muted)}
+  .footer-meta{color:var(--muted);font-size:12px;margin-top:14px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Сырьевые фьючерсы · плотности</h1>
+  <span class="sub">poll_futures.txt · класс SPBFUT · суперплотности 💥 · обновление 15 с</span>
+  <nav><a href="/hub.html">← хаб</a> · <a href="/densities.html">топ плотностей (акции)</a></nav>
+  <button id="bell" style="background:var(--panel);color:var(--text);border:1px solid var(--border)"
+          title="Браузерные уведомления: новые плотности ≥100k и движения ≥2%/10 мин">🔔 оповещения</button>
+  <button id="load">Обновить</button>
+</header>
+<main>
+  <div id="status" class="status"></div>
+  <div class="note">
+    Логика та же, что у акций: плотности стакана, удары, тренд, оповещения —
+    отдельный список <b>poll_futures.txt</b>. Фьючерс — конкретный контракт с
+    экспирацией: при её приближении контракт в списке заменяется на следующий.
+    «Съедено» — оценка объёма, снятого с уровня (максимальный виденный размер минус
+    текущий; отмена заявки неотличима от сделки). Доля съеденного (%): до ~30% —
+    стенку трогают, 30–70% — торгуют в неё, больше 70% — разбирают. «Удар» —
+    разовое снижение остатка ≥10% (и ≥1% размера) между снимками стакана. «Сила» —
+    объём уровня к среднему объёму уровня стакана тикера. «Тренд» — по EMA 7/14/100
+    (10-минутные свечи): все три EMA ниже цены — рост ▲, все выше — падение ▼.
+    «Живая» и «съедено» не противоречат друг другу: живая — заявка прямо сейчас
+    стоит в стакане, съедено — насколько её прогрызли ударами; это одна борьба.
+    «Проторговано (факт)» — оборот сделок по ЦЕНЕ за всю её жизнь (уровень мог
+    переставляться) — со стеной напрямую не сравнивать.
+  </div>
+  <div class="grid">
+    <div class="panel"><h2>Топ-25 по размеру (абсолютный)</h2><div id="by-size"></div></div>
+    <div class="panel"><h2>Топ-25 по силе (R/avg)</h2><div id="by-ratio"></div></div>
+  </div>
+  <div class="footer-meta" id="meta"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const statusEl=$('status');
+// Человекочитаемые названия контрактов (тикеры меняются при ролловере)
+const NAMES={BRZ6:'Нефть Brent',NGZ6:'Природный газ',GDZ6:'Золото',SVZ6:'Серебро',
+             PTZ6:'Платина',CEZ6:'Медь',ANZ6:'Алюминий',CCG7:'Какао',KCG7:'Кофе'};
+function setStatus(m,k){if(!m){statusEl.className='status';statusEl.textContent='';return}
+  statusEl.className='status '+(k||'info');statusEl.textContent=m}
+function fmt(n,d=4){return n===null||n===undefined?'—':Number(n).toFixed(d)}
+function fmtInt(n){return n===null||n===undefined?'—':Number(n).toLocaleString('ru-RU')}
+function fmtTs(ts){
+  const today=new Date().toISOString().slice(0,10);
+  return ts.slice(0,10)===today ? ts.slice(11,19) : ts.slice(5,16).replace('T',' ');
+}
+function fmtEaten(n){
+  if(!n) return '—';
+  return n>=1e6 ? (n/1e6).toFixed(1)+' млн' : n>=1e3 ? (n/1e3).toFixed(1)+' тыс' : fmtInt(n);
+}
+async function load(){
+  const btn=$('load');btn.disabled=true;setStatus('Загрузка…','info');
+  try{
+    const r=await fetch('/api/tinkoff/densities/top?limit=25&kind=futures');
+    if(!r.ok){const t=await r.text();let m=t;try{m=JSON.parse(t).detail||t}catch(e){}
+      setStatus('Ошибка: '+m,'error');return}
+    const d=await r.json();
+    // Тренд по EMA 7/14/100 (батч, кэш на сервере 60 с) — ошибка не ломает таблицу.
+    const tickers=[...new Set([...d.by_size,...d.by_ratio].map(x=>x.ticker))];
+    const trends=await loadTrends(tickers);
+    render($('by-size'), d.by_size, trends);
+    render($('by-ratio'), d.by_ratio, trends);
+    $('meta').textContent = 'данные: '+(d.db_ok?'MariaDB':'БД недоступна')+
+      ' · построено: '+d.generated_at.slice(11,19)+' МСК';
+    setStatus(null);
+  }catch(e){setStatus('Сеть/сервер: '+e.message,'error')}
+  finally{btn.disabled=false}
+}
+async function loadTrends(tickers){
+  if(!tickers.length)return{};
+  try{
+    // Фьючерсы в ISS живут в engines=futures/markets=forts/boards=RFUD
+    // (акции — stock/shares/TQBR, параметр по умолчанию на бэкенде).
+    const r=await fetch('/api/atr/trend?tickers='+encodeURIComponent(tickers.join(','))+
+      '&engine=futures&market=forts&board=RFUD');
+    if(!r.ok)return{};
+    const d=await r.json();
+    const m={};
+    for(const it of d.items||[])m[it.ticker]=it;
+    return m;
+  }catch(e){return{}}
+}
+function trendCell(trends, ticker){
+  const it=trends&&trends[ticker];
+  if(!it)return '<td class="trend-cell"><span class="t-flat">…</span></td>';
+  if(it.trend==='up')return '<td class="trend-cell"><span class="t-up" title="EMA 7/14/100 ниже цены — рост">▲</span></td>';
+  if(it.trend==='down')return '<td class="trend-cell"><span class="t-down" title="EMA 7/14/100 выше цены — падение">▼</span></td>';
+  return '<td class="trend-cell"><span class="t-flat" title="не все EMA по одну сторону цены">—</span></td>';
+}
+function render(el, rows, trends){
+  if(!rows.length){el.innerHTML='<p style="color:var(--muted)">Пока нет данных — плотности копятся фоновым поллером во время торгов.</p>';return}
+  let h=`<table><thead><tr><th>Контракт</th><th title="EMA 7/14/100 против цены: все ниже — рост, все выше — падение">Тренд</th><th>Сторона</th><th>Цена</th><th>Размер</th>
+    <th>Съедено</th><th>Проторговано (факт)</th><th>R/avg</th><th>Появилась</th><th>Статус</th></tr></thead><tbody>`;
+  for(const r of rows){
+    const sideCls = r.side==='bid'?'bid':'ask';
+    const pct = r.eaten_pct||0;
+    const pCls = pct>70?'p-high':pct>30?'p-mid':'p-low';
+    const pctTxt = pct>0 ? `<span class="pct">${pct.toFixed(0)}%</span>` : '';
+    const bar = pct>0 ? `<span class="bar ${pCls}"><i style="width:${Math.min(pct,100)}%"></i></span>` : '';
+    // Факт = реальные сделки по цене уровня (лента). Отличается от «Съедено»
+    // (оценка из стакана, где отмена заявки неотличима от сделки).
+    const tr = r.traded||0;
+    const trPct = r.traded_pct||0;
+    const trCls = trPct>70?'p-high':trPct>30?'p-mid':'p-low';
+    const trBar = trPct>0 ? `<span class="bar ${trCls}"><i style="width:${Math.min(trPct,100)}%"></i></span>` : '';
+    const trTxt = tr>0 ? `${fmtInt(tr)} (${trPct.toFixed(0)}%)${trBar}` : '—';
+    const stCls = r.active?'active':'gone';
+    h+=`<tr class="${r.is_super?'super':''}">
+      <td class="ticker">${r.ticker}<span class="tname">${NAMES[r.ticker]||''}</span></td>
+      ${trendCell(trends, r.ticker)}
+      <td class="${sideCls}">${r.side==='bid'?'🟢 bid':'🔴 ask'}</td>
+      <td class="${sideCls}">${fmt(r.price)}</td>
+      <td><b>${fmtInt(r.size)}</b></td>
+      <td class="eaten-cell">${fmtEaten(r.eaten)}${pctTxt}${bar}</td>
+      <td class="eaten-cell">${trTxt}</td>
+      <td>${fmt(r.ratio,2)}</td>
+      <td>${fmtTs(r.first_ts)}</td>
+      <td class="${stCls}">${r.is_super?'💥 ':''}${r.status||(r.active?'активна':'ушла')}</td>
+    </tr>`;
+  }
+  h+='</tbody></table>';
+  el.innerHTML=h;
+}
+// ==================== Оповещения (браузер) ====================
+// Лента /api/moex/alerts/recent: новые плотности ≥100k и движения ≥2%.
+let alertLast=0;
+try{alertLast=parseInt(localStorage.getItem('alerts_last_id')||'0',10)||0}catch(e){}
+async function pollAlerts(){
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
+  try{
+    const r=await fetch('/api/moex/alerts/recent?after='+alertLast);
+    if(!r.ok)return;
+    const d=await r.json();
+    for(const a of d.alerts){
+      alertLast=a.id;
+      const T={move:'Движение цены',density:'Новая плотность',broken:'Уровень пробит',
+               eaten:'Стена съедена',hold:'Уровень держится',range:'Диапазон дня',
+               volume:'Всплеск объёма',trend:'Смена тренда',digest:'Итоги дня'};
+      new Notification(T[a.kind]||'Оповещение',{body:a.text.replace(/<[^>]+>/g,''),tag:'atr-'+a.id});
+    }
+    if(d.alerts.length)try{localStorage.setItem('alerts_last_id',String(alertLast))}catch(e){}
+  }catch(e){}
+}
+setInterval(pollAlerts,20000);
+async function skipOldAlerts(){
+  try{
+    const r=await fetch('/api/moex/alerts/recent');
+    if(!r.ok)return;
+    const d=await r.json();
+    if(d.alerts.length){
+      alertLast=d.alerts[d.alerts.length-1].id;
+      try{localStorage.setItem('alerts_last_id',String(alertLast))}catch(e){}
+    }
+  }catch(e){}
+}
+$('bell').addEventListener('click',()=>{
+  if(!('Notification' in window)){alert('Браузер не поддерживает уведомления');return}
+  Notification.requestPermission().then(p=>{
+    if(p==='granted'){skipOldAlerts().then(pollAlerts)}
+    else if(p==='denied'){alert('Уведомления запрещены в настройках сайта (иконка 🔒 в адресной строке)')}
+  });
+});
+$('load').addEventListener('click',load);
+setInterval(()=>{if(document.visibilityState==='visible')load()},15000);
+load();
+</script>
+</body>
+</html>
