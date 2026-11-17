@@ -36,6 +36,10 @@ class DensityLevelTop(BaseModel):
     is_super: bool = False
     active: bool = False # уровень сейчас в стакане
     gone: bool = False   # уровень исчез из стакана
+    merged: bool = False # 🧩 сводная: соседние уровни объединены в один
+    parts: int = 1       # сколько уровней вошло в сводную
+    price_lo: float | None = None  # диапазон цен частей (для сводной)
+    price_hi: float | None = None
 
 
 class TopDensitiesResponse(BaseModel):

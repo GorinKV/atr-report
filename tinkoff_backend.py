@@ -21,6 +21,8 @@ from tinkoff_schemas import (
     TradesResponse,
 )
 
+log = logging.getLogger("uvicorn.error")
+
 router = APIRouter(prefix="/api/tinkoff", tags=["tinkoff"])
 
 DENSITY_K = 3.0      # порог плотности по умолчанию (ratio относительно среднего)
@@ -367,6 +369,60 @@ async def trades_get(
 # ============================================================
 # Топ-25 плотностей (по размеру и по силе)
 # ============================================================
+_tick_cache: dict[str, float] = {}
+
+
+def _instrument_info_sync(figi: str):
+    """Инструмент по FIGI (тик, название): кэш БД заполняется из этого."""
+    from t_tech.invest.schemas import InstrumentIdType
+    with Client(_token()) as client:
+        r = client.instruments.get_instrument_by(
+            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi)
+        return r.instrument
+
+
+async def _tick_size(ticker: str, figi: str | None = None) -> float | None:
+    """Размер тика: память -> кэш БД (density_tick) -> T-Invest."""
+    if ticker in _tick_cache:
+        return _tick_cache[ticker]
+    cached = await asyncio.to_thread(density_store.get_tick_sync, ticker)
+    if cached:
+        _tick_cache[ticker] = cached
+        return cached
+    try:
+        figi = figi or await _find_figi(ticker, "TQBR")
+        info = await asyncio.to_thread(_instrument_info_sync, figi)
+        q = info.min_price_increment
+        tick = (q.units + q.nano / 1e9) if q else None
+    except Exception as e:
+        log.warning("тик %s: %s: %s", ticker, type(e).__name__, e)
+        tick = None
+    if tick:
+        _tick_cache[ticker] = tick
+        await asyncio.to_thread(density_store.set_tick_sync, ticker, tick)
+    return tick
+
+
+async def _merge_densities(rows, key=lambda r: -r["size"]):
+    """Свести соседние уровни (≤2 тика, сосед ≥⅓ от крупного) в одну
+    строку 🧩 «сводная из N». Тики берутся из кэша/БД/T-Invest."""
+    if len(rows) < 2:
+        return rows
+    tickers = list({(r["ticker"] if isinstance(r, dict) else r.ticker)
+                    for r in rows})
+    ticks = {tk: await _tick_size(tk) for tk in tickers}
+
+    def tick_of(tk):
+        return ticks.get(tk)
+
+    dicts = await asyncio.to_thread(
+        density_store.merge_levels,
+        [r if isinstance(r, dict) else r.model_dump() for r in rows],
+        tick_of, 2.0, 3.0, key)
+    from tinkoff_schemas import DensityLevelTop
+    return [DensityLevelTop(**d) for d in dicts]
+
+
 @router.get("/densities/top", response_model=TopDensitiesResponse)
 async def densities_top_get(
     limit: int = Query(25, ge=1, le=100),
@@ -383,12 +439,16 @@ async def densities_top_get(
     пусто — вся вселенная. Поля eaten — оценка съеденного с уровня
     объёма (max - текущий); lvl активен, если видели < 45 с.
     active=1 — фильтр «только живые»: без него топ вытесняют стены
-    прошлых дней, и активных уровней в лимите может не остаться."""
+    прошлых дней, и активных уровней в лимите может не остаться.
+    Соседние уровни (≤2 тика, размер соседа ≥⅓ от крупного) сводятся
+    в одну строку 🧩 «сводная»."""
     from moex_backend import _read_futures, _read_tickers
     tk_map = {"futures": _read_futures, "stocks": _read_tickers}
     tickers = tk_map.get(kind.strip().lower(), lambda: None)()
     by_size, by_ratio, db_ok = await asyncio.to_thread(
         density_store.top_levels_sync, limit, active, tickers)
+    by_size = await _merge_densities(by_size)
+    by_ratio = await _merge_densities(by_ratio, key=lambda r: -r["ratio"])
     return TopDensitiesResponse(
         generated_at=_msk_now().isoformat(timespec="seconds"),
         db_ok=db_ok,

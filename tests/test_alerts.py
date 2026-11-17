@@ -73,8 +73,8 @@ class TestNewDensity:
             alerts._sent_at.clear()
 
     def test_threshold(self):
-        assert alerts.on_new_density("SBER", "bid", 297.2, 99_999, 2.5) is None
-        assert alerts.on_new_density("SBER", "bid", 297.2, 100_000, 2.5) is not None
+        assert alerts.on_new_density("SBER", "bid", 297.2, 124_999, 2.5) is None
+        assert alerts.on_new_density("SBER", "bid", 297.2, 125_000, 2.5) is not None
 
     def test_flapping_damped(self):
         # уровень пропал и появился снова: повтор в течение часа гасится

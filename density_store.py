@@ -594,6 +594,137 @@ def mark_hold_sync(ticker: str, side: str, price: float,
             except Exception: pass
 
 
+# Размер тика инструмента (для «сводных» плотностей): шаг цены нужен,
+# чтобы считать «рядом в паре тиков». Кэш в отдельной таблице — ALTER
+# недоступен, новые поля только новыми таблицами.
+_TICK_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS density_tick (
+    ticker VARCHAR(16) PRIMARY KEY,
+    tick   DOUBLE NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"""
+
+
+def get_tick_sync(ticker: str) -> float | None:
+    """Размер тика из кэша БД; None — не знаем (заполнит poller/API)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return None
+        with conn.cursor() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS density_tick (\n"
+                      "    ticker VARCHAR(16) PRIMARY KEY,\n"
+                      "    tick   DOUBLE NOT NULL\n"
+                      ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
+            c.execute("SELECT tick FROM density_tick WHERE ticker = %s",
+                      (ticker,))
+            row = c.fetchone()
+        return float(row[0]) if row else None
+    except Exception as e:
+        log.warning("density_store: тик %s: %s: %s", ticker,
+                    type(e).__name__, e)
+        return None
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def set_tick_sync(ticker: str, tick: float) -> None:
+    """Сохранить размер тика (кэш, перезаписывается при изменении)."""
+    conn = None
+    try:
+        conn = _connect()
+        if conn is None:
+            return
+        with conn.cursor() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS density_tick (\n"
+                      "    ticker VARCHAR(16) PRIMARY KEY,\n"
+                      "    tick   DOUBLE NOT NULL\n"
+                      ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
+            c.execute("INSERT INTO density_tick (ticker, tick) VALUES (%s, %s)"
+                      " ON DUPLICATE KEY UPDATE tick = VALUES(tick)",
+                      (ticker, tick))
+    except Exception as e:
+        log.warning("density_store: тик %s сохранить: %s: %s", ticker,
+                    type(e).__name__, e)
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+def merge_levels(rows: list[dict], tick_of=None, eps_mult: float = 2.0,
+                 part_k: float = 3.0, sort_key=None) -> list[dict]:
+    """Сводные плотности (чистая функция, тестируется без сети).
+
+    Уровни одного тикера и одной стороны, стоящие рядом (расстояние
+    <= eps_mult тиков) и размером >= 1/part_k от крупнейшего в паре,
+    объединяются в одну строку: размер/съедено/факт/удары — суммы,
+    цена — взвешенная по размеру, статус «🧩 сводная из N».
+    tick_of(ticker) -> размер тика; без него eps = 0.01% цены.
+    """
+    if len(rows) < 2:
+        return list(rows)
+    out: list[dict] = []
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        groups.setdefault((r["ticker"], r["side"]), []).append(r)
+    for grp in groups.values():
+        grp.sort(key=lambda r: -r["size"])
+        consumed: set[int] = set()
+        for i, a in enumerate(grp):
+            if i in consumed:
+                continue
+            tick = tick_of(a["ticker"]) if tick_of else None
+            eps = (tick if tick else a["price"] * 1e-4) * eps_mult
+            cluster = [i]
+            for j in range(i + 1, len(grp)):
+                if j in consumed:
+                    continue
+                b = grp[j]
+                if (abs(b["price"] - a["price"]) <= eps
+                        and b["size"] >= a["size"] / part_k):
+                    cluster.append(j)
+            if len(cluster) == 1:
+                out.append(a)
+                continue
+            consumed.update(cluster)
+            parts = [grp[k] for k in cluster]
+            size = sum(p["size"] for p in parts)
+            eaten = sum(p["eaten"] for p in parts)
+            traded = sum(p["traded"] for p in parts)
+            merged = dict(a)
+            merged.update({
+                "price": round(sum(p["price"] * p["size"]
+                                   for p in parts) / size, 6),
+                "size": size,
+                "eaten": eaten,
+                "eaten_pct": round(eaten / size * 100, 1) if size else 0.0,
+                "traded": traded,
+                "traded_pct": round(traded / size * 100, 1) if size else 0.0,
+                "hits": sum(p["hits"] for p in parts),
+                "ratio": max(p["ratio"] for p in parts),
+                "first_ts": min(p["first_ts"] for p in parts),
+                "last_ts": max(p["last_ts"] for p in parts),
+                "is_super": any(p["is_super"] for p in parts),
+                "active": any(p["active"] for p in parts),
+                "gone": all(p["gone"] for p in parts),
+                "status": ("🧩 сводная из " + str(len(parts))
+                           + (f" · {a['status']}" if a["status"] else "")),
+                "merged": True, "parts": len(parts),
+                "price_lo": min(p["price"] for p in parts),
+                "price_hi": max(p["price"] for p in parts),
+            })
+            out.append(merged)
+    if sort_key is None:
+        out.sort(key=lambda r: -r["size"])
+    else:
+        out.sort(key=sort_key)
+    return out
+
+
 def broken_walls_sync(day) -> list[tuple[str, str, float]]:
     """Стены, пробитые за сутки day (для «итогов дня»):
     [(ticker, side, price)] в порядке пробития (свежие сверху)."""

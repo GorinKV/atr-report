@@ -42,7 +42,7 @@ LOCAL_CONFIG_FILE = Path(__file__).resolve().parent / "telegram.local.json"
 
 MOVE_PCT = 2.0          # «большое движение»: |Δ| % за 10 минут
 MOVE_COOLDOWN = 1800    # не чаще раза в 30 мин на тикер
-DENSITY_MIN = 100_000   # «крупная плотность»: размер уровня, шт
+DENSITY_MIN = 125_000   # «крупная плотность»: размер уровня, шт (100k + 25%)
 DENSITY_COOLDOWN = 3600 # не чаще раза в час на (тикер, сторона, цена)
 MOVE_INTERVAL = 30.0    # период проверки движений, с
 FEED_MAX = 200          # размер веб-ленты

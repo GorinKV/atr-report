@@ -80,6 +80,9 @@
     (10-минутные свечи): все три EMA ниже цены — рост ▲, все выше — падение ▼.
     «Живая» и «съедено» не противоречат друг другу: живая — заявка прямо сейчас
     стоит в стакане, съедено — насколько её прогрызли ударами; это одна борьба.
+    «🧩 сводная» — соседние уровни одного направления (≤2 тика друг от друга,
+    размер соседа ≥⅓ от крупного) показаны одной строкой: размер/съедено/
+    факт/удары суммируются, цена — взвешенная, в подсказке диапазон.
     «Проторговано (факт)» — оборот сделок по ЦЕНЕ за всю её жизнь (уровень мог
     переставляться) — со стеной напрямую не сравнивать.
   </div>
@@ -175,7 +178,7 @@ function render(el, rows, trends){
     const trTxt = tr>0 ? `${fmtInt(tr)} (${trPct.toFixed(0)}%)${trBar}` : '—';
     const stCls = r.active?'active':'gone';
     h+=`<tr class="${r.is_super?'super':''}">
-      <td class="ticker">${r.ticker}<span class="tname">${NAMES[r.ticker]||''}</span></td>
+      <td class="ticker">${r.ticker}<span class="tname">${NAMES[r.ticker]||''}</span>${r.merged?` <span class="pct" title="сводная: ${r.parts} уровней рядом, ${r.price_lo}–${r.price_hi}">🧩×${r.parts}</span>`:''}</td>
       ${trendCell(trends, r.ticker)}
       <td class="${sideCls}">${r.side==='bid'?'🟢 bid':'🔴 ask'}</td>
       <td class="${sideCls}">${fmt(r.price)}</td>
