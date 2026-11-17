@@ -46,7 +46,8 @@
   .bar i{display:block;height:100%;border-radius:3px}
   .p-low i{background:var(--green)} .p-mid i{background:#d8a13a} .p-high i{background:var(--red)}
   .pct{color:var(--muted);font-size:11px;margin-left:5px}
-  .trend-cell{text-align:center!important}
+  .trend-cell{text-align:center!important;white-space:nowrap}
+  .trend-cell span{margin:0 1px}
   .t-up{color:var(--green);font-weight:700}
   .t-down{color:var(--red);font-weight:700}
   .t-flat{color:var(--muted)}
@@ -136,11 +137,21 @@ function trendCell(trends, ticker){
   if(!it)return '<td class="trend-cell"><span class="t-flat">…</span></td>';
   if(it.trend==='up')return '<td class="trend-cell"><span class="t-up" title="EMA 7/14/100 ниже цены — рост">▲</span></td>';
   if(it.trend==='down')return '<td class="trend-cell"><span class="t-down" title="EMA 7/14/100 выше цены — падение">▼</span></td>';
-  return '<td class="trend-cell"><span class="t-flat" title="не все EMA по одну сторону цены">—</span></td>';
+  // Тренда нет: три треугольника — медленная EMA100, потом EMA14, потом EMA7.
+  // Каждый: ▲ если EMA ниже цены (бычий), ▼ если выше (медвежий).
+  const tris=['ema100','ema14','ema7'].map((k,i)=>{
+    const nm=['EMA100','EMA14','EMA7'][i], e=it[k], p=it.price;
+    if(e===null||e===undefined||p===null||p===undefined)
+      return `<span class="t-flat" title="${nm}: нет данных">·</span>`;
+    if(e<p)return `<span class="t-up" title="${nm} ниже цены (бычья)">▲</span>`;
+    if(e>p)return `<span class="t-down" title="${nm} выше цены (медвежья)">▼</span>`;
+    return `<span class="t-flat" title="${nm} на цене">—</span>`;
+  });
+  return `<td class="trend-cell">${tris.join('')}</td>`;
 }
 function render(el, rows, isSize, trends){
   if(!rows.length){el.innerHTML='<p style="color:var(--muted)">Пока нет данных — плотности копятся фоновым поллером во время торгов.</p>';return}
-  let h=`<table><thead><tr><th>Тикер</th><th title="EMA 7/14/100 против цены: все ниже — рост, все выше — падение">Тренд</th><th>Сторона</th><th>Цена</th><th>Размер</th>
+  let h=`<table><thead><tr><th>Тикер</th><th title="Тренд по EMA 7/14/100 против цены: все ниже — рост ▲, все выше — падение ▼; когда тренда нет — по каждой EMA отдельно (медленная, 14, 7)">Тренд</th><th>Сторона</th><th>Цена</th><th>Размер</th>
     <th>Съедено</th><th>Проторговано (факт)</th><th>R/avg</th><th>Появилась</th><th>Статус</th></tr></thead><tbody>`;
   for(const r of rows){
     const sideCls = r.side==='bid'?'bid':'ask';
