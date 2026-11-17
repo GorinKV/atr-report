@@ -35,6 +35,11 @@
   .bid{color:var(--green)} .ask{color:var(--red)}
   .up{color:var(--green)} .down{color:var(--red)}
   .super{box-shadow:inset 2px 0 0 var(--accent);font-weight:600}
+  .trend-cell{text-align:center!important;white-space:nowrap}
+  .trend-cell span{margin:0 1px}
+  .t-up{color:var(--green);font-weight:700}
+  .t-down{color:var(--red);font-weight:700}
+  .t-flat{color:var(--muted)}
   .gone{color:var(--muted)} .active{color:var(--green)}
   .eaten-cell{white-space:nowrap}
   .bar{display:inline-block;vertical-align:middle;width:44px;height:6px;border-radius:3px;
@@ -85,7 +90,7 @@
     <a class="nav" href="/futures.html"><b>Фьючерсы</b> нефть, золото, NG…</a>
     <a class="nav" href="/docs"><b>API</b> swagger</a>
     <button class="nav" id="day-btn" style="cursor:pointer;font:inherit"><b>📊 Итоги дня</b> цены и плотности</button>
-    <button class="nav" id="bell-btn" style="cursor:pointer;font:inherit" title="Браузерные уведомления: движения ≥2%/10 мин и новые плотности ≥100k. Telegram настраивается в telegram.json"><b>🔔</b> оповещения</button>
+    <button class="nav" id="bell-btn" style="cursor:pointer;font:inherit" title="Браузерные уведомления: движения ≥2%/10 мин и новые плотности ≥125k. Telegram настраивается в telegram.json"><b>🔔</b> оповещения</button>
   </nav>
 </header>
 <div id="status" class="status"></div>
@@ -101,7 +106,10 @@
       «Живая» — заявка сейчас в стакане, пусть прогрызенная ударами: держится и съедается
       одновременно, это одна борьба (больше ударов → больше съедено).
       «Факт» — оборот сделок по цене за всю её жизнь (уровень переставлялся), со стеной
-      напрямую не сравнивать.</p>
+      напрямую не сравнивать.
+      «🧩×N» — сводная: N соседних уровней одного направления (≤2 тика друг от друга,
+      размер соседа ≥⅓ от крупного) показаны одной строкой, размеры и факты суммированы,
+      цена — взвешенная (диапазон частей — в подсказке).</p>
   </div>
   <div class="panel">
     <h2>Самые большие изменения цены <span class="meta">10 мин / с начала дня · T-Invest</span></h2>
@@ -147,6 +155,35 @@ async function jget(url){const r=await fetch(url);if(!r.ok){const t=await r.text
 // Последний снимок топа плотностей: переключатель «только живые»
 // перерисовывает панель без нового запроса.
 let lastDens=[];
+let trends={};   // тикер -> тренд по EMA 7/14/100 (кэш на клиенте 15 с)
+async function loadTrends(tickers){
+  if(!tickers.length)return{};
+  try{
+    const r=await fetch('/api/atr/trend?tickers='+encodeURIComponent(tickers.join(',')));
+    if(!r.ok)return{};
+    const d=await r.json();
+    const m={};
+    for(const it of d.items||[])m[it.ticker]=it;
+    return m;
+  }catch(e){return{}}
+}
+function trendCell(trends, ticker){
+  const it=trends&&trends[ticker];
+  if(!it)return '<td class="trend-cell"><span class="t-flat">…</span></td>';
+  if(it.trend==='up')return '<td class="trend-cell"><span class="t-up" title="EMA 7/14/100 ниже цены — рост">▲</span></td>';
+  if(it.trend==='down')return '<td class="trend-cell"><span class="t-down" title="EMA 7/14/100 выше цены — падение">▼</span></td>';
+  // Тренда нет: три треугольника — медленная EMA100, потом EMA14, потом EMA7.
+  // Каждый: ▲ если EMA ниже цены (бычий), ▼ если выше (медвежий).
+  const tris=['ema100','ema14','ema7'].map((k,i)=>{
+    const nm=['EMA100','EMA14','EMA7'][i], e=it[k], p=it.price;
+    if(e===null||e===undefined||p===null||p===undefined)
+      return `<span class="t-flat" title="${nm}: нет данных">·</span>`;
+    if(e<p)return `<span class="t-up" title="${nm} ниже цены (бычья)">▲</span>`;
+    if(e>p)return `<span class="t-down" title="${nm} выше цены (медвежья)">▼</span>`;
+    return `<span class="t-flat" title="${nm} на цене">—</span>`;
+  });
+  return `<td class="trend-cell">${tris.join('')}</td>`;
+}
 function renderDens(allRows){
   lastDens=allRows;
   // «Только живые»: убираем ушедшие/снятые/полностью съеденные (это все
@@ -161,7 +198,11 @@ function renderDens(allRows){
   }
   if(!rows.length){$('dens').innerHTML='<p style="color:var(--muted);margin:0">'+
     (lastDens.length?'Активных уровней нет — все ушли/сняты/съедены.':'Пока нет данных — копятся поллером во время торгов.')+'</p>';return}
-  let h='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th><th>Съедено</th><th>Факт</th><th>R/avg</th><th>Статус</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>Тикер</th>'+
+    '<th title="Тренд по EMA 7/14/100 против цены: все ниже — рост ▲, все выше — падение ▼; когда тренда нет — по каждой EMA отдельно (медленная, 14, 7)">Тренд</th>'+
+    '<th>Сторона</th><th>Цена</th><th>Размер</th><th title="оценка из стакана: макс. размер − текущий остаток (отмена заявки неотличима от сделки)">Съедено</th>'+
+    '<th title="оборот сделок по ЦЕНЕ уровня за всю её жизнь (уровень переставлялся)">Проторговано (факт)</th>'+
+    '<th>R/avg</th><th>Появилась</th><th>Статус</th></tr></thead><tbody>';
   for(const r of rows){
     const cls=r.side==='bid'?'bid':'ask';
     const pct=r.eaten_pct||0;
@@ -170,15 +211,19 @@ function renderDens(allRows){
     const bar=pct>0?`<span class="bar ${pCls}"><i style="width:${Math.min(pct,100)}%"></i></span>`:'';
     // Факт = реальные сделки по цене уровня (лента), а не оценка из стакана.
     const tr=r.traded||0, trPct=r.traded_pct||0;
-    const trTxt=tr>0?`${fmtInt(tr)} <span class="pct">${trPct.toFixed(0)}%</span>`:'—';
+    const trCls=trPct>70?'p-high':trPct>30?'p-mid':'p-low';
+    const trBar=trPct>0?`<span class="bar ${trCls}"><i style="width:${Math.min(trPct,100)}%"></i></span>`:'';
+    const trTxt=tr>0?`${fmtInt(tr)} (${trPct.toFixed(0)}%)${trBar}`:'—';
     h+=`<tr class="${r.is_super?'super':''}">
-      <td class="ticker">${r.ticker}</td>
-      <td class="${cls}">${r.side==='bid'?'🟢':'🔴'}</td>
+      <td class="ticker">${r.ticker}${r.merged?` <span class="pct" title="сводная: ${r.parts} уровней рядом, ${r.price_lo}–${r.price_hi}">🧩×${r.parts}</span>`:''}</td>
+      ${trendCell(trends,r.ticker)}
+      <td class="${cls}">${r.side==='bid'?'🟢 bid':'🔴 ask'}</td>
       <td class="${cls}">${fmt(r.price)}</td>
       <td><b>${fmtInt(r.size)}</b></td>
       <td class="eaten-cell">${fmtEaten(r.eaten)}${pctTxt}${bar}</td>
       <td class="eaten-cell">${trTxt}</td>
-      <td>${fmt(r.ratio)}</td>
+      <td>${fmt(r.ratio,2)}</td>
+      <td>${fmtTs(r.first_ts)}</td>
       <td class="${r.active?'active':'gone'}">${r.is_super?'💥 ':''}${r.status||(r.active?'активна':'ушла')}</td></tr>`;
   }
   $('dens').innerHTML=h+'</tbody></table>';
@@ -258,7 +303,9 @@ function renderSummary(d){
   h+='<div class="sec-title">Плотности, появившиеся в этот день (топ по размеру)</div>';
   if(d.levels.length){
     h+='<table><thead><tr><th>Тикер</th><th>Сторона</th><th>Цена</th><th>Размер</th>'+
-      '<th>Съедено</th><th>Факт</th><th>R/avg</th><th>Появилась</th><th>Статус</th></tr></thead><tbody>';
+      '<th title="оценка из стакана: макс. размер − текущий остаток (отмена заявки неотличима от сделки)">Съедено</th>'+
+      '<th title="оборот сделок по ЦЕНЕ уровня за всю её жизнь (уровень переставлялся)">Проторговано (факт)</th>'+
+      '<th>R/avg</th><th>Появилась</th><th>Статус</th></tr></thead><tbody>';
     for(const r of d.levels){
       const cls=r.side==='bid'?'bid':'ask';
       const pct=r.eaten_pct||0;
@@ -266,12 +313,14 @@ function renderSummary(d){
       const pctTxt=pct>0?`<span class="pct">${pct.toFixed(0)}%</span>`:'';
       const bar=pct>0?`<span class="bar ${pCls}"><i style="width:${Math.min(pct,100)}%"></i></span>`:'';
       const tr=r.traded||0, trPct=r.traded_pct||0;
-      const trTxt=tr>0?`${fmtInt(tr)} <span class="pct">${trPct.toFixed(0)}%</span>`:'—';
-      h+=`<tr class="${r.is_super?'super':''}"><td class="ticker">${r.ticker}</td>`+
+      const trCls=trPct>70?'p-high':trPct>30?'p-mid':'p-low';
+      const trBar=trPct>0?`<span class="bar ${trCls}"><i style="width:${Math.min(trPct,100)}%"></i></span>`:'';
+      const trTxt=tr>0?`${fmtInt(tr)} (${trPct.toFixed(0)}%)${trBar}`:'—';
+      h+=`<tr class="${r.is_super?'super':''}"><td class="ticker">${r.ticker}${r.merged?` <span class="pct" title="сводная: ${r.parts} уровней рядом, ${r.price_lo}–${r.price_hi}">🧩×${r.parts}</span>`:''}</td>`+
         `<td class="${cls}">${r.side==='bid'?'🟢 bid':'🔴 ask'}</td>`+
         `<td class="${cls}">${fmt(r.price)}</td><td><b>${fmtInt(r.size)}</b></td>`+
         `<td class="eaten-cell">${fmtEaten(r.eaten)}${pctTxt}${bar}</td>`+
-        `<td class="eaten-cell">${trTxt}</td><td>${fmt(r.ratio)}</td>`+
+        `<td class="eaten-cell">${trTxt}</td><td>${fmt(r.ratio,2)}</td>`+
         `<td>${fmtTs(r.first_ts)}</td>`+
         `<td class="${r.gone?'gone':'active'}">${r.is_super?'💥 ':''}${r.status}</td></tr>`;
     }
@@ -352,7 +401,12 @@ async function load(){  try{
         ($('dens-live').checked?'10&active=1':'25')),
       jget('/api/moex/changes?limit=10'),
     ]);
-    if(top.status==='fulfilled') renderDens(top.value.by_size);
+    if(top.status==='fulfilled'){
+      // тренд по EMA (батч, кэш на сервере 60 с) — ошибка не ломает таблицу
+      const tks=[...new Set(top.value.by_size.map(x=>x.ticker))];
+      trends=await loadTrends(tks);
+      renderDens(top.value.by_size);
+    }
     if(chg.status==='fulfilled') renderChg(chg.value.items);
     const errs=[top,chg].filter(x=>x.status==='rejected').map(x=>x.reason.message);
     setStatus(errs.length?('Частично: '+errs.join(' | ')):null);

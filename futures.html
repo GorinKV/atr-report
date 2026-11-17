@@ -63,7 +63,7 @@
   <span class="sub">poll_futures.txt · класс SPBFUT · суперплотности 💥 · обновление 15 с</span>
   <nav><a href="/hub.html">← хаб</a> · <a href="/densities.html">топ плотностей (акции)</a></nav>
   <button id="bell" style="background:var(--panel);color:var(--text);border:1px solid var(--border)"
-          title="Браузерные уведомления: новые плотности ≥100k и движения ≥2%/10 мин">🔔 оповещения</button>
+          title="Браузерные уведомления: новые плотности ≥125k и движения ≥2%/10 мин">🔔 оповещения</button>
   <button id="load">Обновить</button>
 </header>
 <main>
@@ -194,7 +194,7 @@ function render(el, rows, trends){
   el.innerHTML=h;
 }
 // ==================== Оповещения (браузер) ====================
-// Лента /api/moex/alerts/recent: новые плотности ≥100k и движения ≥2%.
+// Лента /api/moex/alerts/recent: новые плотности ≥125k и движения ≥2%.
 let alertLast=0;
 try{alertLast=parseInt(localStorage.getItem('alerts_last_id')||'0',10)||0}catch(e){}
 async function pollAlerts(){
