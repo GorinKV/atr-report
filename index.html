@@ -319,7 +319,8 @@ async function pollAlerts(){
       alertLast=a.id;
       const T={move:'Движение цены',density:'Новая плотность',broken:'Уровень пробит',
                eaten:'Стена съедена',hold:'Уровень держится',range:'Диапазон дня',
-               volume:'Всплеск объёма',trend:'Смена тренда',digest:'Итоги дня'};
+               volume:'Всплеск объёма',trend:'Смена тренда',digest:'Итоги дня',
+               roll:'Ролловер фьючерса'};
       new Notification(T[a.kind]||'Оповещение',{body:a.text.replace(/<[^>]+>/g,''),tag:'atr-'+a.id});
     }
     if(d.alerts.length)try{localStorage.setItem('alerts_last_id',String(alertLast))}catch(e){}

@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 
 import density_poller
 import density_store
+import futures_rollover
 import schedule_checker
 from alerts import router as alerts_router
 from alerts import start as start_alerts
@@ -36,6 +37,8 @@ async def startup():
     start_alerts()
     # Еженедельная сверка расписания торгов с фактами MOEX (ISS).
     schedule_checker.start_weekly()
+    # Авторолловер сырьевых фьючерсов (экспирация близко -> следующий контракт).
+    futures_rollover.start()
     # Фоновый опрос стакана по списку из poll_tickers.txt.
     density_poller.start()
 
