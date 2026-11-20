@@ -14,7 +14,6 @@
 """
 import asyncio
 import logging
-import os
 import time
 from datetime import UTC, datetime, timedelta, timezone
 from datetime import date as date_type
@@ -57,12 +56,13 @@ def _day_candles_sync(figi: str, day: date_type
                       ) -> list[tuple[date_type, float, float, float, float, int]]:
     """Дневные свечи T-Invest вокруг даты:
     [(дата МСК, open, close, high, low, volume)]."""
-    from t_tech.invest import Client
     from t_tech.invest.schemas import CandleInterval
+
+    from tinvest_shared import tclient
 
     from_ = datetime(day.year, day.month, day.day, tzinfo=UTC) - timedelta(days=5)
     to = from_ + timedelta(days=7)
-    with Client(os.environ["TINKOFF_TOKEN"]) as c:
+    with tclient() as c:
         r = c.market_data.get_candles(instrument_id=figi, from_=from_, to=to,
                                       interval=CandleInterval.CANDLE_INTERVAL_DAY)
     out = []

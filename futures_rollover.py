@@ -108,10 +108,9 @@ def _apply_roll(lines: list[str], old: str, new: str, new_name: str,
 
 def _instruments_map() -> dict[str, Any]:
     """Все фьючерсы T-Invest: {TICKER -> instrument}."""
-    import os
 
-    from t_tech.invest import Client
-    with Client(os.environ["TINKOFF_TOKEN"]) as c:
+    from tinvest_shared import tclient
+    with tclient() as c:
         r = c.instruments.futures()
     return {f.ticker.upper(): f for f in r.instruments}
 
@@ -119,12 +118,12 @@ def _instruments_map() -> dict[str, Any]:
 def _volume24_sync(figi: str) -> int:
     """Суммарный объём минутных свечей за последние CANDLE_HOURS."""
     try:
-        import os
 
-        from t_tech.invest import Client
         from t_tech.invest.schemas import CandleInterval
+
+        from tinvest_shared import tclient
         now = datetime.now(UTC)
-        with Client(os.environ["TINKOFF_TOKEN"]) as c:
+        with tclient() as c:
             r = c.market_data.get_candles(
                 instrument_id=figi, from_=now - timedelta(hours=CANDLE_HOURS),
                 to=now, interval=CandleInterval.CANDLE_INTERVAL_1_MIN)

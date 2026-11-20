@@ -12,10 +12,10 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from t_tech.invest import Client
 from t_tech.invest.schemas import CandleInterval
 
 from moex_schemas import ChangesResponse, PriceChange
+from tinvest_shared import tclient
 
 router = APIRouter(prefix="/api/moex", tags=["moex"])
 UTC = UTC
@@ -82,7 +82,7 @@ def _find_figi_sync(ticker: str, class_code: str = "TQBR") -> str:
     """FIGI по тикеру: акции, затем ETF, затем фьючерсы (как в tinkoff_backend).
     future_by требует class_code: пробуем заданный, затем класс фьючерсов
     SPBFUT (алерты ищут FIGI фьючерса с классом по умолчанию)."""
-    with Client(_token()) as client:
+    with tclient() as client:
         from t_tech.invest.schemas import InstrumentIdType
         try:
             r = client.instruments.share_by(
@@ -116,14 +116,14 @@ async def _figi(ticker: str) -> str:
 
 
 def _last_prices_sync(figis: list[str]) -> dict[str, float]:
-    with Client(_token()) as client:
+    with tclient() as client:
         r = client.market_data.get_last_prices(instrument_id=figis)
     # У LastPrice ключ — figi (instrument_uid не задаём).
     return {lp.figi: _to_float(lp.price) for lp in r.last_prices}
 
 
 def _candles_sync(figi: str, interval, from_, to_):
-    with Client(_token()) as client:
+    with tclient() as client:
         r = client.market_data.get_candles(
             instrument_id=figi, from_=from_, to=to_, interval=interval)
     out = []

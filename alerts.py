@@ -19,7 +19,6 @@ orderbook_snapshot при первом появлении уровня плот�
 """
 import json
 import logging
-import os
 import queue
 import threading
 import time
@@ -184,11 +183,12 @@ def on_new_density(ticker: str, side: str, price: float,
 def _candles1m_sync(figi: str) -> list[tuple]:
     """Минутные свечи T-Invest за 15 минут:
     [(время, close, high, low, volume)]."""
-    from t_tech.invest import Client
     from t_tech.invest.schemas import CandleInterval
 
+    from tinvest_shared import tclient
+
     now = datetime.now(UTC)
-    with Client(os.environ["TINKOFF_TOKEN"]) as c:
+    with tclient() as c:
         r = c.market_data.get_candles(
             instrument_id=figi, from_=now - timedelta(minutes=15), to=now,
             interval=CandleInterval.CANDLE_INTERVAL_1_MIN)
@@ -460,10 +460,10 @@ def _trend_change(prev: str | None, cur: str | None) -> str | None:
 
 def _trend_loop() -> None:
     import pandas as pd
-    from t_tech.invest import Client
     from t_tech.invest.schemas import CandleInterval
 
     from atr_backend import build_trend_item
+    from tinvest_shared import tclient
 
     while True:
         for tk in mb._read_all_tickers():
@@ -472,7 +472,7 @@ def _trend_loop() -> None:
                 if not figi:
                     figi = _figis.setdefault(tk, mb._find_figi_sync(tk))
                 now = datetime.now(UTC)
-                with Client(os.environ["TINKOFF_TOKEN"]) as c:
+                with tclient() as c:
                     r = c.market_data.get_candles(
                         instrument_id=figi, from_=now - timedelta(days=3),
                         to=now, interval=CandleInterval.CANDLE_INTERVAL_10_MIN)

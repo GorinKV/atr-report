@@ -6,7 +6,6 @@ from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
-from t_tech.invest import Client
 from t_tech.invest.schemas import InstrumentIdType
 
 import alerts
@@ -20,6 +19,7 @@ from tinkoff_schemas import (
     TradePrint,
     TradesResponse,
 )
+from tinvest_shared import tclient
 
 log = logging.getLogger("uvicorn.error")
 
@@ -59,7 +59,7 @@ _figi_cache: dict[tuple[str, str], tuple[float, str]] = {}
 
 
 def _find_figi_sync(ticker, class_code):
-    with Client(_token()) as client:
+    with tclient() as client:
         try:
             r = client.instruments.share_by(
                 id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
@@ -109,7 +109,7 @@ async def _find_figi(ticker, class_code):
 # Стакан
 # ============================================================
 def _get_order_book_sync(figi, depth):
-    with Client(_token()) as client:
+    with tclient() as client:
         # SDK 1.0.0: аргументы напрямую, без request=
         return client.market_data.get_order_book(
             instrument_id=figi,
@@ -255,7 +255,7 @@ async def orderbook_get(
 # Лента
 # ============================================================
 def _get_last_trades_sync(figi, from_dt, to_dt):
-    with Client(_token()) as client:
+    with tclient() as client:
         # SDK 1.0.0: аргументы напрямую, без request= и без GetLastTradesRequest
         return client.market_data.get_last_trades(
             instrument_id=figi,
@@ -375,7 +375,7 @@ _tick_cache: dict[str, float] = {}
 def _instrument_info_sync(figi: str):
     """Инструмент по FIGI (тик, название): кэш БД заполняется из этого."""
     from t_tech.invest.schemas import InstrumentIdType
-    with Client(_token()) as client:
+    with tclient() as client:
         r = client.instruments.get_instrument_by(
             id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi)
         return r.instrument

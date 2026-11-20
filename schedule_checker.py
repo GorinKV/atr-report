@@ -24,7 +24,6 @@
 """
 import json
 import logging
-import os
 import threading
 import time
 from collections import Counter
@@ -70,12 +69,13 @@ def _minutes_tinvest(day: date) -> set[int]:
     (в минутах UTC). Живой канал — видит новые сессии 24/7 в реальном
     времени; история у него слабая, поэтому сутки склеиваются с ISS.
     """
-    from t_tech.invest import Client
     from t_tech.invest.schemas import CandleInterval
+
+    from tinvest_shared import tclient
 
     from_ = datetime(day.year, day.month, day.day, tzinfo=UTC)
     to = from_ + timedelta(days=1)
-    with Client(os.environ["TINKOFF_TOKEN"]) as c:
+    with tclient() as c:
         r = c.market_data.get_candles(
             figi=_sber_figi(), from_=from_, to=to,
             interval=CandleInterval.CANDLE_INTERVAL_1_MIN, limit=10000)
