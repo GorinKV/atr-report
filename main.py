@@ -34,7 +34,7 @@ async def startup():
     # Фоновый писатель истории плотностей в MariaDB (если настроена).
     density_store.start_worker()
     density_store.start_cleanup_loop()  # ночная чистка в техперерыв биржи
-    # Оповещения: Telegram + веб-лента (движения ≥2%/10мин, плотности ≥100k).
+    # Оповещения: Telegram + веб-лента (движения ≥2%/10мин, плотности ≥125k).
     start_alerts()
     # Еженедельная сверка расписания торгов с фактами MOEX (ISS).
     schedule_checker.start_weekly()
