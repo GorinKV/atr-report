@@ -50,30 +50,47 @@ class TestDeadline:
         assert seen["timeout"] == 1.0
 
 
+class FakeOutcome:
+    """Исход вызова gRPC: ошибка поднимается только в result()."""
+
+    def __init__(self, value=None, error=None):
+        self.value = value
+        self.error = error
+
+    def result(self):
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
 class TestRetry:
     def test_retries_unavailable(self, monkeypatch):
         monkeypatch.setattr(ts, "RETRY_BACKOFF", 0.0)
         calls = []
+        ok = FakeOutcome("ok")
 
         def cont(details, request):
             calls.append(1)
             if len(calls) == 1:
-                raise FakeError(grpc.StatusCode.UNAVAILABLE)
-            return "ok"
+                return FakeOutcome(error=FakeError(grpc.StatusCode.UNAVAILABLE))
+            return ok
 
-        assert ts._Retry().intercept_unary_unary(cont, _details(), None) == "ok"
+        out = ts._Retry().intercept_unary_unary(cont, _details(), None)
+        assert out is ok
         assert len(calls) == 2
 
     def test_no_retry_other_codes(self):
         calls = []
+        err = FakeError(grpc.StatusCode.NOT_FOUND)
 
         def cont(details, request):
             calls.append(1)
-            raise FakeError(grpc.StatusCode.NOT_FOUND)
+            return FakeOutcome(error=err)
 
-        with pytest.raises(FakeError):
-            ts._Retry().intercept_unary_unary(cont, _details(), None)
+        out = ts._Retry().intercept_unary_unary(cont, _details(), None)
         assert len(calls) == 1
+        with pytest.raises(FakeError):
+            out.result()
 
     def test_gives_up_after_retries(self, monkeypatch):
         monkeypatch.setattr(ts, "RETRY_BACKOFF", 0.0)
@@ -81,11 +98,12 @@ class TestRetry:
 
         def cont(details, request):
             calls.append(1)
-            raise FakeError(grpc.StatusCode.UNAVAILABLE)
+            return FakeOutcome(error=FakeError(grpc.StatusCode.UNAVAILABLE))
 
-        with pytest.raises(FakeError):
-            ts._Retry().intercept_unary_unary(cont, _details(), None)
+        out = ts._Retry().intercept_unary_unary(cont, _details(), None)
         assert len(calls) == ts.RETRIES
+        with pytest.raises(FakeError):
+            out.result()
 
 
 class TestReset:

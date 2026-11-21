@@ -25,6 +25,7 @@
 """
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -43,6 +44,7 @@ POLL_INTERVAL = 15.0       # сек между циклами
 POLL_DEPTH = 20
 POLL_DENSITY_K = 1.5       # чувствительный порог: ловит и плотности, и супер
 POLL_CONCURRENCY = 8       # одновременных запросов к T-Invest
+SLOW_TASK = 5.0            # сек: запрос дольше — пишем в лог (диагностика)
 
 # Расписание внутри 15-секундного такта (номера циклов).
 TIER2_EVERY = 2            # второй эшелон: стакан раз в 30 с
@@ -168,6 +170,7 @@ async def _accumulate_trades(ticker: str, class_code: str = "TQBR") -> None:
 async def _book(tk: str, cls: str, sem: asyncio.Semaphore) -> bool:
     """Стакан одного тикера; ошибки не роняют цикл. True — успех."""
     async with sem:
+        t0 = time.monotonic()
         try:
             resp = await tb.orderbook_snapshot(
                 tk, cls, POLL_DEPTH, POLL_DENSITY_K)
@@ -178,11 +181,16 @@ async def _book(tk: str, cls: str, sem: asyncio.Semaphore) -> bool:
             # Инструмент не найден, сеть, токен и т.п. — не роняем цикл.
             log.warning("poller %s: %s: %s", tk, type(e).__name__, e)
             return False
+        finally:
+            dt = time.monotonic() - t0
+            if dt >= SLOW_TASK:
+                log.info("poller %s: стакан %.1f с", tk, dt)
 
 
 async def _trades(tk: str, cls: str, sem: asyncio.Semaphore) -> bool:
     """Лента сделок одного тикера; ошибки не роняют цикл. True — успех."""
     async with sem:
+        t0 = time.monotonic()
         try:
             await _accumulate_trades(tk, cls)
             return True
@@ -190,10 +198,15 @@ async def _trades(tk: str, cls: str, sem: asyncio.Semaphore) -> bool:
             log.warning("poller %s: лента сделок: %s: %s",
                         tk, type(e).__name__, e)
             return False
+        finally:
+            dt = time.monotonic() - t0
+            if dt >= SLOW_TASK:
+                log.info("poller %s: лента %.1f с", tk, dt)
 
 
 async def _poll_cycle() -> None:
     global _cycle
+    started = time.monotonic()
     stocks1 = read_tickers()
     stocks2 = read_tickers2()
     futures = read_futures()
@@ -215,7 +228,11 @@ async def _poll_cycle() -> None:
     if _cycle % TRADES2_EVERY == 0:
         tasks += [_trades(tk, "TQBR", sem) for tk in second]
     results = await asyncio.gather(*tasks)
+    elapsed = time.monotonic() - started
     ok = sum(1 for r in results if r)
+    if elapsed > POLL_INTERVAL:
+        log.info("poller: цикл %.1f с (задач %d, успешно %d)",
+                 elapsed, len(tasks), ok)
     if tasks and ok * 2 < len(tasks):
         # Больше половины запросов упали — канал, скорее всего, «залип».
         # Закрываем его: следующий цикл откроет свежее соединение, не

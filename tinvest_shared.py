@@ -53,22 +53,29 @@ class _Deadline(grpc.UnaryUnaryClientInterceptor):
 
 
 class _Retry(grpc.UnaryUnaryClientInterceptor):
-    """Один повтор при UNAVAILABLE (обрыв соединения/канала)."""
+    """Один повтор при UNAVAILABLE (обрыв соединения/канала).
+
+    Важно: континуация gRPC не бросает исключение, а возвращает объект-исход
+    (успех или ошибку). Ошибку поднимает внешний вызов .result(), поэтому
+    проверяем исход через result() и возвращаем его наружу как есть.
+    """
 
     def intercept_unary_unary(self, continuation, details, request):
-        last: grpc.RpcError | None = None
+        outcome = None
         for attempt in range(RETRIES):
+            outcome = continuation(details, request)
             try:
-                return continuation(details, request)
+                outcome.result()
+                return outcome
             except grpc.RpcError as e:
-                if e.code() is not grpc.StatusCode.UNAVAILABLE:
-                    raise
-                last = e
-                if attempt + 1 < RETRIES:
-                    time.sleep(RETRY_BACKOFF * (2 ** attempt)
-                               + random.uniform(0, 0.2))
-        assert last is not None
-        raise last
+                if (e.code() is not grpc.StatusCode.UNAVAILABLE
+                        or attempt + 1 >= RETRIES):
+                    return outcome
+            except Exception:
+                return outcome  # не gRPC-ошибка — пусть решает вызывающий
+            time.sleep(RETRY_BACKOFF * (2 ** attempt) + random.uniform(0, 0.2))
+        assert outcome is not None
+        return outcome
 
 
 def shared():
