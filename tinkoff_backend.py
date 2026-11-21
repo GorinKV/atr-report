@@ -6,7 +6,6 @@ from collections import deque
 from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
-from t_tech.invest.schemas import InstrumentIdType
 
 import alerts
 import density_store
@@ -19,7 +18,7 @@ from tinkoff_schemas import (
     TradePrint,
     TradesResponse,
 )
-from tinvest_shared import tclient
+from tinvest_shared import find_figi_sync, tclient
 
 log = logging.getLogger("uvicorn.error")
 
@@ -59,36 +58,11 @@ _figi_cache: dict[tuple[str, str], tuple[float, str]] = {}
 
 
 def _find_figi_sync(ticker, class_code):
-    with tclient() as client:
-        try:
-            r = client.instruments.share_by(
-                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                class_code=class_code,
-                id=ticker,
-            )
-            return r.instrument.figi
-        except Exception:
-            # Акции/ETF не нашлись — пробуем ETF, затем фьючерсы.
-            # future_by требует class_code: заданный, затем класс
-            # фьючерсов SPBFUT (акции ищут с TQBR, фьючерсы — SPBFUT).
-            try:
-                r = client.instruments.etf_by(
-                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                    id=ticker,
-                )
-                return r.instrument.figi
-            except Exception:
-                for cc in dict.fromkeys([class_code, "SPBFUT"]):
-                    try:
-                        r = client.instruments.future_by(
-                            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                            class_code=cc,
-                            id=ticker,
-                        )
-                        return r.instrument.figi
-                    except Exception:
-                        continue
-                raise
+    """FIGI по тикеру и классу — общая реализация в tinvest_shared.
+
+    Для фьючерсов (SPBFUT) порядок попыток начинается сразу с future_by,
+    для акций — share_by, затем ETF."""
+    return find_figi_sync(ticker, class_code)
 
 
 async def _find_figi(ticker, class_code):
@@ -431,7 +405,7 @@ async def densities_top_get(
     kind: str = Query("",
         description="класс инструментов: пусто — все, "
                     "'futures' — сырьевые фьючерсы (poll_futures.txt), "
-                    "'stocks' — акции (poll_tickers.txt)"),
+                    "'stocks' — акции (poll_tickers.txt + poll_tickers2.txt)"),
 ) -> TopDensitiesResponse:
     """Самые большие плотности: два топа — по абсолютному размеру
     (объём уровня) и по относительной силе (R/avg для своего тикера).

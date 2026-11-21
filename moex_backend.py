@@ -15,13 +15,15 @@ from fastapi import APIRouter, HTTPException, Query
 from t_tech.invest.schemas import CandleInterval
 
 from moex_schemas import ChangesResponse, PriceChange
-from tinvest_shared import tclient
+from tinvest_shared import find_figi_sync, tclient
 
 router = APIRouter(prefix="/api/moex", tags=["moex"])
 UTC = UTC
 
-# Тикеры по умолчанию — тот же список, что опрашивает фоновый поллер.
+# Тикеры по умолчанию — те же списки, что опрашивает фоновый поллер.
+# Первый эшелон — частый опрос (15 с), второй — реже (30 с).
 POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
+TIER2_FILE = Path(__file__).resolve().parent / "poll_tickers2.txt"
 # Сырьевые фьючерсы — отдельный список и отдельная страница futures.html.
 FUT_FILE = Path(__file__).resolve().parent / "poll_futures.txt"
 
@@ -37,28 +39,48 @@ _c10_cache: dict[str, tuple[float, float | None]] = {}
 _day_cache: dict[str, tuple[float, tuple]] = {}  # ticker -> (mono, (open, prev_close))
 
 
-def _read_tickers() -> list[str]:
-    if not POLL_FILE.exists():
+def _read_file(path: Path) -> list[str]:
+    """Тикеры из файла: по одному на строку, # — комментарий."""
+    if not path.exists():
         return []
     out = []
-    for line in POLL_FILE.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.split("#")[0].strip().upper()
         if line:
             out.append(line)
+    return out
+
+
+def _read_tickers1() -> list[str]:
+    """Первый эшелон — частый опрос (poll_tickers.txt)."""
+    return _read_file(POLL_FILE)
+
+
+def _read_tickers2() -> list[str]:
+    """Второй эшелон — редкий опрос (poll_tickers2.txt)."""
+    return _read_file(TIER2_FILE)
+
+
+def _read_tickers() -> list[str]:
+    """Все акции наблюдения: первый и второй эшелоны без дублей.
+
+    Используется алертами, трендом, итогами дня и фильтром «акции»
+    в топе плотностей — поэтому второй эшелон должен попадать сюда,
+    даже если поллер опрашивает его реже.
+    """
+    out = _read_tickers1()
+    seen = set(out)
+    for tk in _read_tickers2():
+        if tk not in seen:
+            out.append(tk)
+            seen.add(tk)
     return out
 
 
 def _read_futures() -> list[str]:
     """Тикеры сырьевых фьючерсов из poll_futures.txt (контракты,
     например BRZ6 — нефть Brent до 02.12)."""
-    if not FUT_FILE.exists():
-        return []
-    out = []
-    for line in FUT_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.split("#")[0].strip().upper()
-        if line:
-            out.append(line)
-    return out
+    return _read_file(FUT_FILE)
 
 
 def _read_all_tickers() -> list[str]:
@@ -79,38 +101,21 @@ def _to_float(q):
 
 
 def _find_figi_sync(ticker: str, class_code: str = "TQBR") -> str:
-    """FIGI по тикеру: акции, затем ETF, затем фьючерсы (как в tinkoff_backend).
-    future_by требует class_code: пробуем заданный, затем класс фьючерсов
-    SPBFUT (алерты ищут FIGI фьючерса с классом по умолчанию)."""
-    with tclient() as client:
-        from t_tech.invest.schemas import InstrumentIdType
-        try:
-            r = client.instruments.share_by(
-                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                class_code=class_code, id=ticker)
-            return r.instrument.figi
-        except Exception:
-            try:
-                r = client.instruments.etf_by(
-                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER, id=ticker)
-                return r.instrument.figi
-            except Exception:
-                for cc in dict.fromkeys([class_code, "SPBFUT"]):
-                    try:
-                        r = client.instruments.future_by(
-                            id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_TICKER,
-                            class_code=cc, id=ticker)
-                        return r.instrument.figi
-                    except Exception:
-                        continue
-                raise
+    """FIGI по тикеру: акции, затем ETF, затем фьючерсы.
+
+    Общая реализация — tinvest_shared.find_figi_sync (там же выбор
+    порядка попыток по классу: фьючерсы ищутся сразу в SPBFUT)."""
+    return find_figi_sync(ticker, class_code)
 
 
 async def _figi(ticker: str) -> str:
     f = _figis.get(ticker)
     if f:
         return f
-    f = await asyncio.to_thread(_find_figi_sync, ticker)
+    # Фьючерсы ищем в их классе: иначе share_by(TQBR) заведомо падает
+    # NOT_FOUND и на каждый контракт уходит два лишних запроса.
+    class_code = "SPBFUT" if ticker in _read_futures() else "TQBR"
+    f = await asyncio.to_thread(_find_figi_sync, ticker, class_code)
     _figis[ticker] = f
     return f
 

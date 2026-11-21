@@ -22,6 +22,7 @@ import logging
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -312,6 +313,7 @@ def _pct10(rows: list[tuple], now: datetime) -> tuple[float, float] | None:
 
 
 _figis: dict[str, str] = {}
+_figi_lock = threading.Lock()
 
 
 def on_wall_eaten(ticker: str, row: dict) -> int | None:
@@ -386,20 +388,49 @@ def _check_holds() -> None:
             0)  # однократность обеспечивает mark_hold_sync
 
 
+def _figi_for(tk: str) -> str:
+    """FIGI из кэша; при промахе — запрос в T-Invest под блокировкой."""
+    figi = _figis.get(tk)
+    if figi:
+        return figi
+    with _figi_lock:
+        figi = _figis.get(tk)
+        if not figi:
+            class_code = "SPBFUT" if tk in mb._read_futures() else "TQBR"
+            figi = mb._find_figi_sync(tk, class_code)
+            _figis[tk] = figi
+    return figi
+
+
+def _fetch_candles(tk: str) -> tuple[str, str | None, list[tuple] | None,
+                                       Exception | None]:
+    """Свечи одного тикера для пула потоков: (тикер, figi, строки, ошибка)."""
+    try:
+        figi = _figi_for(tk)
+        return tk, figi, _candles1m_sync(figi), None
+    except Exception as e:
+        return tk, None, None, e
+
+
 def _check_moves() -> None:
     """Один проход по тикерам поллера (минутные свечи T-Invest):
-    Δ10 мин, всплеск объёма, пробой диапазона дня, пробитие стен."""
-    for tk in mb._read_all_tickers():
-        try:
-            figi = _figis.get(tk)
-            if not figi:
-                figi = _figis.setdefault(tk, mb._find_figi_sync(tk))
-            now = datetime.now(UTC)
-            rows = _candles1m_sync(figi)
-        except Exception as e:
-            log.warning("alerts %s: свечи: %s: %s", tk, type(e).__name__, e)
+    Δ10 мин, всплеск объёма, пробой диапазона дня, пробитие стен.
+
+    Свечи запрашиваются параллельно (пул 8 потоков): последовательный
+    обход 47 тикеров не укладывался в 30-секундный такт и сдвигал
+    проверку движения. Обработка результатов — по-прежнему по порядку.
+    """
+    tickers = mb._read_all_tickers()
+    if not tickers:
+        return
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        batches = list(pool.map(_fetch_candles, tickers))
+    now = datetime.now(UTC)
+    for tk, figi, rows, err in batches:
+        if err is not None:
+            log.warning("alerts %s: свечи: %s: %s", tk, type(err).__name__, err)
             continue
-        if not rows:
+        if not rows or figi is None:
             continue
         try:
             # пробитие уровня — даже без «движения»
@@ -468,9 +499,7 @@ def _trend_loop() -> None:
     while True:
         for tk in mb._read_all_tickers():
             try:
-                figi = _figis.get(tk)
-                if not figi:
-                    figi = _figis.setdefault(tk, mb._find_figi_sync(tk))
+                figi = _figi_for(tk)
                 now = datetime.now(UTC)
                 with tclient() as c:
                     r = c.market_data.get_candles(

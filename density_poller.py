@@ -1,15 +1,24 @@
 """Фоновый поллер стакана: накапливает историю плотностей без браузера.
 
-- Список тикеров читается из poll_tickers.txt (по одному на строке,
-  строки с # — комментарии). Файл перечитывается каждый цикл, правки
-  подхватываются без рестарта сервиса.
-- Цикл раз в 15 с, торговое время берётся из trading_schedule.json
-  (перечитывается каждый цикл; правки и еженедельная сверка
-  schedule_checker подхватываются без рестарта сервиса). Сейчас MOEX
-  торгует круглосуточно 7 дней в неделю (проверено по фактическим
-  минутным свечам; trading_schedules от T-Invest недостоверен).
-- Пауза только в технический перерыв биржи (break_start/break_end
-  из trading_schedule.json, сейчас ~02:55-03:05 МСК).
+- Первый эшелон читается из poll_tickers.txt, второй — из
+  poll_tickers2.txt (по одному тикеру на строке, # — комментарий).
+  Файлы перечитываются каждый цикл, правки подхватываются без рестарта.
+- Первый эшелон и фьючерсы опрашиваются раз в 15 с, второй эшелон —
+  раз в 30 с: так второй эшелон попадает в поиск плотностей, но не
+  съедает лимиты T-Invest и время цикла.
+- Лента сделок («проторговано» на уровнях) — реже стакана: первый
+  эшелон раз в 60 с, второй раз в 5 мин. Курсор хранится в БД, поэтому
+  более редкий опрос не теряет сделки, а только агрегирует их пачками.
+- Запросы внутри цикла идут параллельно (семафор 8), а не по очереди:
+  иначе 47 тикеров × 2 запроса не укладывались в 15-секундный такт.
+- Бюджет T-Invest — 600 запросов/мин на сервис котировок; текущая
+  схема даёт ~250/мин (стаканы ~130, сделки ~25, свечи движения ~95).
+- Торговое время берётся из trading_schedule.json (перечитывается
+  каждый цикл; правки и еженедельная сверка schedule_checker
+  подхватываются без рестарта). Сейчас MOEX торгует круглосуточно
+  7 дней в неделю (проверено по фактическим минутным свечам;
+  trading_schedules от T-Invest недостоверен). Пауза только в
+  технический перерыв биржи (~02:55-03:05 МСК).
 - Каждый тикер опрашивается через tinkoff_backend.orderbook_snapshot
   (порог плотности 1.5x, глубина 20) — новые плотности попадают в
   историю: in-memory буфер и MariaDB, если настроена.
@@ -21,16 +30,24 @@ from pathlib import Path
 
 import density_store as ds
 import tinkoff_backend as tb
+import tinvest_shared
 import trading_schedule as tsched
 
 log = logging.getLogger("uvicorn.error")
 
 POLL_FILE = Path(__file__).resolve().parent / "poll_tickers.txt"
+TIER2_FILE = Path(__file__).resolve().parent / "poll_tickers2.txt"
 FUT_FILE = Path(__file__).resolve().parent / "poll_futures.txt"
 FUT_CLASS = "SPBFUT"       # класс сырьевых фьючерсов на MOEX
 POLL_INTERVAL = 15.0       # сек между циклами
 POLL_DEPTH = 20
 POLL_DENSITY_K = 1.5       # чувствительный порог: ловит и плотности, и супер
+POLL_CONCURRENCY = 8       # одновременных запросов к T-Invest
+
+# Расписание внутри 15-секундного такта (номера циклов).
+TIER2_EVERY = 2            # второй эшелон: стакан раз в 30 с
+TRADES_EVERY = 4           # лента сделок 1-го эшелона: раз в 60 с
+TRADES2_EVERY = 20         # лента сделок 2-го эшелона: раз в 5 мин
 
 # Агрессивная SELL-сделка исполняется по бидам (выедает bid-уровни),
 # BUY — по аскам. OrderDirection: BUY=1, SELL=2, UNSPECIFIED=0.
@@ -41,30 +58,34 @@ TRADES_MAX_BACK = timedelta(minutes=55)
 TRADES_FIRST_WINDOW = timedelta(seconds=60)
 
 _task: asyncio.Task | None = None
+_cycle = 0
 
 
-def read_tickers() -> list[str]:
-    if not POLL_FILE.exists():
+def _read_file(path: Path) -> list[str]:
+    if not path.exists():
         return []
     out = []
-    for line in POLL_FILE.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.split("#")[0].strip().upper()
         if line:
             out.append(line)
     return out
+
+
+def read_tickers() -> list[str]:
+    """Первый эшелон — частый опрос (poll_tickers.txt)."""
+    return _read_file(POLL_FILE)
+
+
+def read_tickers2() -> list[str]:
+    """Второй эшелон — редкий опрос (poll_tickers2.txt)."""
+    return _read_file(TIER2_FILE)
 
 
 def read_futures() -> list[str]:
     """Тикеры сырьевых фьючерсов из poll_futures.txt (контракты,
     например BRZ6). Опрашиваются тем же циклом, класс SPBFUT."""
-    if not FUT_FILE.exists():
-        return []
-    out = []
-    for line in FUT_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.split("#")[0].strip().upper()
-        if line:
-            out.append(line)
-    return out
+    return _read_file(FUT_FILE)
 
 
 def _is_trading_time() -> bool:
@@ -144,32 +165,73 @@ async def _accumulate_trades(ticker: str, class_code: str = "TQBR") -> None:
         ticker, (last_time or now).astimezone(UTC).isoformat())
 
 
-async def _poll_cycle():
-    stocks = read_tickers()
-    futures = read_futures()
-    fset = set(futures)
-    tickers = [(tk, FUT_CLASS if tk in fset else "TQBR")
-               for tk in stocks] + [(tk, FUT_CLASS) for tk in futures]
-    if not tickers:
-        return
-    for tk, cls in tickers:
+async def _book(tk: str, cls: str, sem: asyncio.Semaphore) -> bool:
+    """Стакан одного тикера; ошибки не роняют цикл. True — успех."""
+    async with sem:
         try:
-            resp = await tb.orderbook_snapshot(tk, cls, POLL_DEPTH, POLL_DENSITY_K)
-            n_dens = len(resp.densities)
-            if n_dens:
-                log.debug("poller %s: плотностей %s", tk, n_dens)
+            resp = await tb.orderbook_snapshot(
+                tk, cls, POLL_DEPTH, POLL_DENSITY_K)
+            if resp.densities:
+                log.debug("poller %s: плотностей %s", tk, len(resp.densities))
+            return True
         except Exception as e:
             # Инструмент не найден, сеть, токен и т.п. — не роняем цикл.
             log.warning("poller %s: %s: %s", tk, type(e).__name__, e)
+            return False
+
+
+async def _trades(tk: str, cls: str, sem: asyncio.Semaphore) -> bool:
+    """Лента сделок одного тикера; ошибки не роняют цикл. True — успех."""
+    async with sem:
         try:
             await _accumulate_trades(tk, cls)
+            return True
         except Exception as e:
-            log.warning("poller %s: лента сделок: %s: %s", tk, type(e).__name__, e)
+            log.warning("poller %s: лента сделок: %s: %s",
+                        tk, type(e).__name__, e)
+            return False
+
+
+async def _poll_cycle() -> None:
+    global _cycle
+    stocks1 = read_tickers()
+    stocks2 = read_tickers2()
+    futures = read_futures()
+    fset = set(futures)
+
+    first = [(tk, FUT_CLASS if tk in fset else "TQBR") for tk in stocks1]
+    first += [(tk, FUT_CLASS) for tk in futures]
+    seen = {tk for tk, _ in first}
+    second = [tk for tk in stocks2 if tk not in seen]
+    if not first and not second:
+        return
+
+    sem = asyncio.Semaphore(POLL_CONCURRENCY)
+    tasks = [_book(tk, cls, sem) for tk, cls in first]
+    if _cycle % TIER2_EVERY == 0:
+        tasks += [_book(tk, "TQBR", sem) for tk in second]
+    if _cycle % TRADES_EVERY == 0:
+        tasks += [_trades(tk, cls, sem) for tk, cls in first]
+    if _cycle % TRADES2_EVERY == 0:
+        tasks += [_trades(tk, "TQBR", sem) for tk in second]
+    results = await asyncio.gather(*tasks)
+    ok = sum(1 for r in results if r)
+    if tasks and ok * 2 < len(tasks):
+        # Больше половины запросов упали — канал, скорее всего, «залип».
+        # Закрываем его: следующий цикл откроет свежее соединение, не
+        # дожидаясь штатного gRPC-переподключения (пауза до двух минут).
+        log.warning("poller: %s из %s запросов упали — пересоздаю канал",
+                    len(tasks) - ok, len(tasks))
+        await asyncio.to_thread(tinvest_shared.reset)
+    _cycle += 1
 
 
 async def _run():
-    log.info("density poller запущен (файл: %s)", POLL_FILE)
+    log.info("density poller запущен (1-й эшелон: %s, 2-й: %s)",
+             POLL_FILE, TIER2_FILE)
+    loop = asyncio.get_running_loop()
     while True:
+        started = loop.time()
         try:
             if _is_trading_time():
                 await _poll_cycle()
@@ -177,7 +239,8 @@ async def _run():
                 log.debug("poller: вне торгового времени, пауза")
         except Exception as e:
             log.error("poller: ошибка цикла: %s: %s", type(e).__name__, e)
-        await asyncio.sleep(POLL_INTERVAL)
+        # Спим остаток такта: длинный цикл не сдвигает расписание.
+        await asyncio.sleep(max(0.0, POLL_INTERVAL - (loop.time() - started)))
 
 
 def start():

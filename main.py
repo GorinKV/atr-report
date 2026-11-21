@@ -40,7 +40,8 @@ async def startup():
     schedule_checker.start_weekly()
     # Авторолловер сырьевых фьючерсов (экспирация близко -> следующий контракт).
     futures_rollover.start()
-    # Фоновый опрос стакана по списку из poll_tickers.txt.
+    # Фоновый опрос стакана: 1-й эшелон (poll_tickers.txt) — 15 с,
+    # 2-й эшелон (poll_tickers2.txt) — 30 с, запросы параллельно.
     density_poller.start()
 
 # Раздаём HTML-страницы без Nginx — локальный запуск работает из коробки.

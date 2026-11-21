@@ -113,8 +113,16 @@ async def _prices(day: date_type) -> list[DayPrice]:
     now = time.monotonic()
     if hit and now - hit[0] < ttl:
         return hit[1]
+    # Второй эшелон добавил ~30 тикеров: не отправляем все запросы
+    # разом (T-Invest рекомендует ≤50 запросов/с) — ограничиваем 8.
+    sem = asyncio.Semaphore(8)
+
+    async def one(ticker: str) -> DayPrice:
+        async with sem:
+            return await _price_row(ticker, day)
+
     rows = await asyncio.gather(
-        *(_price_row(t, day) for t in mb._read_all_tickers()),
+        *(one(t) for t in mb._read_all_tickers()),
         return_exceptions=True)
     out: list[DayPrice] = []
     for r in rows:

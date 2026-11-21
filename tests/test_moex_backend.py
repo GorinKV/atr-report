@@ -9,17 +9,29 @@ class TestReadTickers:
         f = tmp_path / "poll_tickers.txt"
         f.write_text("SBER\nGAZP\n# комментарий\n\nT\n", encoding="utf-8")
         monkeypatch.setattr(mb, "POLL_FILE", f)
+        monkeypatch.setattr(mb, "TIER2_FILE", tmp_path / "нет_файла2")
         assert mb._read_tickers() == ["SBER", "GAZP", "T"]
 
     def test_inline_comments_and_case(self, monkeypatch, tmp_path):
         f = tmp_path / "poll_tickers.txt"
         f.write_text("sber # банк\n LKOH\n", encoding="utf-8")
         monkeypatch.setattr(mb, "POLL_FILE", f)
+        monkeypatch.setattr(mb, "TIER2_FILE", tmp_path / "нет_файла2")
         assert mb._read_tickers() == ["SBER", "LKOH"]
 
     def test_missing_file(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mb, "POLL_FILE", tmp_path / "нет_файла")
+        monkeypatch.setattr(mb, "TIER2_FILE", tmp_path / "нет_файла2")
         assert mb._read_tickers() == []
+
+    def test_second_tier_merged_without_duplicates(self, monkeypatch, tmp_path):
+        f1 = tmp_path / "poll_tickers.txt"
+        f1.write_text("SBER\nGAZP\n", encoding="utf-8")
+        f2 = tmp_path / "poll_tickers2.txt"
+        f2.write_text("# второй эшелон\nGAZP\nAFLT\nMOEX\n", encoding="utf-8")
+        monkeypatch.setattr(mb, "POLL_FILE", f1)
+        monkeypatch.setattr(mb, "TIER2_FILE", f2)
+        assert mb._read_tickers() == ["SBER", "GAZP", "AFLT", "MOEX"]
 
 
 class TestPickC10Ref:
