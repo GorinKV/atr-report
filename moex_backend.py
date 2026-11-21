@@ -145,12 +145,18 @@ async def _last_prices(tks: list[str]) -> dict[str, float]:
     global _last_prices_cache
     if _last_prices_cache and time.monotonic() - _last_prices_cache[0] < _LP_TTL:
         return _last_prices_cache[1]
-    figis = []
-    for t in tks:
-        try:
-            figis.append(await _figi(t))
-        except Exception:
-            pass  # нет инструмента/прав — тикер пропускаем
+    # Тикеров стало ~40 (второй эшелон): резолвим FIGI параллельно,
+    # но не больше 8 запросов одновременно (рекомендация T-Invest ≤50/с).
+    sem = asyncio.Semaphore(8)
+
+    async def one(t: str) -> str | None:
+        async with sem:
+            try:
+                return await _figi(t)
+            except Exception:
+                return None  # нет инструмента/прав — тикер пропускаем
+
+    figis = [f for f in await asyncio.gather(*(one(t) for t in tks)) if f]
     if not figis:
         return {}
     try:
@@ -235,18 +241,26 @@ async def changes_get(
         raise HTTPException(502, "T-Invest не вернул последние цены (токен/сеть?)")
     inv = {figi: t for t, figi in _figis.items() if figi in prices}
 
-    items = []
-    for figi, last in prices.items():
+    # Второй эшелон добавил ~30 тикеров: день и Δ10 по каждому берём
+    # параллельно (пул 8), иначе таблица хаба собиралась бы десятки секунд.
+    sem = asyncio.Semaphore(8)
+
+    async def one(figi: str, last: float) -> PriceChange | None:
         ticker = inv.get(figi)
         if not ticker:
-            continue
-        open_, prev = await _day_stats(ticker, figi)
+            return None
+        async with sem:
+            (open_, prev), c10 = await asyncio.gather(
+                _day_stats(ticker, figi), _change10(ticker, figi, last))
         day_pct = round((last - open_) / open_ * 100, 2) if open_ else None
         prev_pct = round((last - prev) / prev * 100, 2) if prev else None
-        items.append(PriceChange(
+        return PriceChange(
             ticker=ticker, last=last, prev=prev, open=open_,
             change_pct=prev_pct, change_day_pct=day_pct,
-            change10_pct=await _change10(ticker, figi, last)))
+            change10_pct=c10)
+
+    items = [r for r in await asyncio.gather(
+        *(one(f, last) for f, last in prices.items())) if r is not None]
 
     # Наверху — крупнейшие движения в любом из окон.
     items.sort(key=lambda x: -max(abs(x.change10_pct or 0),
