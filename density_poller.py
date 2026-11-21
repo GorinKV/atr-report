@@ -13,6 +13,9 @@
   иначе 47 тикеров × 2 запроса не укладывались в 15-секундный такт.
 - Бюджет T-Invest — 600 запросов/мин на сервис котировок; текущая
   схема даёт ~250/мин (стаканы ~130, сделки ~25, свечи движения ~95).
+- Пустой стакан (торги закрыты или аукцион) — пауза по этому тикеру
+  2 минуты. Ночью, когда биржа закрыта, это снимает основную часть
+  запросов и риск обрывов соединения.
 - Торговое время берётся из trading_schedule.json (перечитывается
   каждый цикл; правки и еженедельная сверка schedule_checker
   подхватываются без рестарта). Сейчас MOEX торгует круглосуточно
@@ -45,6 +48,7 @@ POLL_DEPTH = 20
 POLL_DENSITY_K = 1.5       # чувствительный порог: ловит и плотности, и супер
 POLL_CONCURRENCY = 8       # одновременных запросов к T-Invest
 SLOW_TASK = 5.0            # сек: запрос дольше — пишем в лог (диагностика)
+EMPTY_BACKOFF = 120.0      # сек: пустой стакан (торги закрыты) — пауза по тикеру
 
 # Расписание внутри 15-секундного такта (номера циклов).
 TIER2_EVERY = 2            # второй эшелон: стакан раз в 30 с
@@ -61,6 +65,10 @@ TRADES_FIRST_WINDOW = timedelta(seconds=60)
 
 _task: asyncio.Task | None = None
 _cycle = 0
+# Тикер -> monotonic-время, до которого не опрашиваем: стакан был пуст
+# (торги закрыты/аукцион). На закрытом рынке это снимает основную
+# нагрузку на T-Invest; при возобновлении торгов пауза не дольше 2 мин.
+_skip_until: dict[str, float] = {}
 
 
 def _read_file(path: Path) -> list[str]:
@@ -176,6 +184,11 @@ async def _book(tk: str, cls: str, sem: asyncio.Semaphore) -> bool:
                 tk, cls, POLL_DEPTH, POLL_DENSITY_K)
             if resp.densities:
                 log.debug("poller %s: плотностей %s", tk, len(resp.densities))
+            # Пустой стакан = торги не идут: не дёргаем инструмент пару минут.
+            if not resp.bid_total and not resp.ask_total:
+                _skip_until[tk] = time.monotonic() + EMPTY_BACKOFF
+            else:
+                _skip_until.pop(tk, None)
             return True
         except Exception as e:
             # Инструмент не найден, сеть, токен и т.п. — не роняем цикл.
@@ -216,7 +229,12 @@ async def _poll_cycle() -> None:
     first += [(tk, FUT_CLASS) for tk in futures]
     seen = {tk for tk, _ in first}
     second = [tk for tk in stocks2 if tk not in seen]
+    # Инструменты с пустым стаканом (торги закрыты) пропускаем до истечения паузы.
+    now = time.monotonic()
+    first = [(tk, cls) for tk, cls in first if _skip_until.get(tk, 0.0) <= now]
+    second = [tk for tk in second if _skip_until.get(tk, 0.0) <= now]
     if not first and not second:
+        _cycle += 1  # такт всё равно прошёл: держим расписание сделок
         return
 
     sem = asyncio.Semaphore(POLL_CONCURRENCY)

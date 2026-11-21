@@ -1,6 +1,8 @@
 """Расписание поллера: читается из trading_schedule.json, без рестарта."""
+import asyncio
 import datetime
 import json
+import time
 
 import pytest
 
@@ -153,3 +155,67 @@ async def test_poll_cycle_keeps_channel_when_half_ok(tmp_path, monkeypatch):
     monkeypatch.setattr(dp, "_trades", trades)
     await dp._poll_cycle()
     assert resets == []
+
+
+@pytest.mark.asyncio
+async def test_book_marks_empty_market(monkeypatch):
+    """Пустой стакан (торги закрыты) — тикер получает паузу 2 минуты."""
+    dp._skip_until.clear()
+
+    class Resp:
+        densities: list = []
+        bid_total = 0.0
+        ask_total = 0.0
+
+    async def snap(*args, **kwargs):
+        return Resp()
+
+    monkeypatch.setattr(dp.tb, "orderbook_snapshot", snap)
+    assert await dp._book("SBER", "TQBR", asyncio.Semaphore(1)) is True
+    assert dp._skip_until["SBER"] > time.monotonic()
+
+
+@pytest.mark.asyncio
+async def test_book_clears_pause_when_market_returns(monkeypatch):
+    """Стакан с заявками снимает паузу."""
+    dp._skip_until.clear()
+    dp._skip_until["SBER"] = time.monotonic() + 60
+
+    class Resp:
+        densities: list = []
+        bid_total = 10.0
+        ask_total = 20.0
+
+    async def snap(*args, **kwargs):
+        return Resp()
+
+    monkeypatch.setattr(dp.tb, "orderbook_snapshot", snap)
+    assert await dp._book("SBER", "TQBR", asyncio.Semaphore(1)) is True
+    assert "SBER" not in dp._skip_until
+
+
+@pytest.mark.asyncio
+async def test_poll_cycle_skips_closed_tickers(tmp_path, monkeypatch):
+    """Тикер на паузе не опрашивается, остальные — как обычно."""
+    f1 = tmp_path / "poll_tickers.txt"
+    f1.write_text("SBER\nGAZP\n", encoding="utf-8")
+    monkeypatch.setattr(dp, "POLL_FILE", f1)
+    monkeypatch.setattr(dp, "TIER2_FILE", tmp_path / "нет2")
+    monkeypatch.setattr(dp, "FUT_FILE", tmp_path / "нет_фьючерсов")
+    monkeypatch.setattr(dp, "_cycle", 0)
+    dp._skip_until.clear()
+    dp._skip_until["SBER"] = time.monotonic() + 60
+    calls: list[str] = []
+
+    async def book(tk, cls, sem):
+        calls.append(tk)
+        return True
+
+    async def trades(tk, cls, sem):
+        return True
+
+    monkeypatch.setattr(dp, "_book", book)
+    monkeypatch.setattr(dp, "_trades", trades)
+    await dp._poll_cycle()
+    assert calls == ["GAZP"]
+    dp._skip_until.clear()
