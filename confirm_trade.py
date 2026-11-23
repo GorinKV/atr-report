@@ -20,8 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 SERVER = "/home/kvg/tinvest-mcp/.venv/bin/tinvest-mcp"
 CONFIG = os.environ.get("TINVEST_MCP_CONFIG", "/home/kvg/.config/tinvest-mcp/config.toml")
@@ -143,13 +142,13 @@ def ask() -> None:
     try:
         ask()
     except EOFError:
-        raise SystemExit("нет интерактивного ввода — заявка не отправлена")
+        raise SystemExit("нет интерактивного ввода — заявка не отправлена") from None
 
 
 def seconds_left(expires_at: str) -> float:
     try:
         dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        return (dt - datetime.now(timezone.utc)).total_seconds()
+        return (dt - datetime.now(UTC)).total_seconds()
     except Exception:
         return 0.0
 

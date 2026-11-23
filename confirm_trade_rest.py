@@ -64,7 +64,7 @@ def call(method: str, payload: dict, tok: str, retries: int = 8):
             if e.code >= 500 or e.code == 429:
                 last_err = e
             else:
-                raise SystemExit(f"{method}: HTTP {e.code} {body[:300]}")
+                raise SystemExit(f"{method}: HTTP {e.code} {body[:300]}") from None
         except Exception as e:  # noqa: BLE001 - сеть Т-Инвестиций рвёт соединения
             last_err = e
         if attempt + 1 < retries:
@@ -96,7 +96,7 @@ def ask() -> None:
     try:
         input()
     except EOFError:
-        raise SystemExit("нет интерактивного ввода — заявка не отправлена")
+        raise SystemExit("нет интерактивного ввода — заявка не отправлена") from None
 
 
 def main() -> int:
