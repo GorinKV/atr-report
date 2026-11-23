@@ -169,7 +169,7 @@ def main() -> int:
 
     mcp = Mcp()
     try:
-        acct = {}
+        acct: dict = {}
         for attempt in range(6):
             acc = mcp.call("get_accounts", {})
             if isinstance(acc, dict):
