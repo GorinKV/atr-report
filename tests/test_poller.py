@@ -75,6 +75,22 @@ def test_read_tier_files(tmp_path, monkeypatch):
     assert dp.read_tickers2() == ["AFLT", "MOEX"]
 
 
+def test_minus_prefix_excludes_ticker_everywhere(tmp_path, monkeypatch):
+    """'-VTBR' в первом эшелоне убирает VTBR и из второго, и из фьючерсов."""
+    f1 = tmp_path / "poll_tickers.txt"
+    f1.write_text("SBER\n-VTBR   # игнор\nGAZP\n-\n", encoding="utf-8")
+    f2 = tmp_path / "poll_tickers2.txt"
+    f2.write_text("VTBR\nAFLT\n", encoding="utf-8")
+    f3 = tmp_path / "poll_futures.txt"
+    f3.write_text("BRZ6\n", encoding="utf-8")
+    monkeypatch.setattr(dp, "POLL_FILE", f1)
+    monkeypatch.setattr(dp, "TIER2_FILE", f2)
+    monkeypatch.setattr(dp, "FUT_FILE", f3)
+    assert dp.read_tickers() == ["SBER", "GAZP"]
+    assert dp.read_tickers2() == ["AFLT"]
+    assert dp.read_futures() == ["BRZ6"]
+
+
 @pytest.mark.asyncio
 async def test_poll_cycle_cadence(tmp_path, monkeypatch):
     """Стаканы 2-го эшелона — каждый 2-й цикл, сделки — реже стаканов."""

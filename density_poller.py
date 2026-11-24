@@ -71,15 +71,43 @@ _cycle = 0
 _skip_until: dict[str, float] = {}
 
 
-def _read_file(path: Path) -> list[str]:
+def _parse_file(path: Path) -> tuple[list[str], set[str]]:
+    """Тикеры из файла: по одному на строку, # — комментарий.
+
+    Строка с минусом ('-VTBR') не опрашивается: тикер попадает в набор
+    исключений и выкидывается из всех списков наблюдения (включая
+    второй эшелон и фьючерсы), даже если он там указан без минуса.
+    """
     if not path.exists():
-        return []
-    out = []
+        return [], set()
+    include: list[str] = []
+    exclude: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.split("#")[0].strip().upper()
-        if line:
-            out.append(line)
+        if not line:
+            continue
+        if line.startswith("-"):
+            ticker = line[1:].strip()
+            if ticker:
+                exclude.add(ticker)
+        else:
+            include.append(line)
+    return include, exclude
+
+
+def _excluded_tickers() -> set[str]:
+    """Все исключения ('-TICKER') из трёх файлов наблюдения."""
+    out: set[str] = set()
+    for path in (POLL_FILE, TIER2_FILE, FUT_FILE):
+        out |= _parse_file(path)[1]
     return out
+
+
+def _read_file(path: Path) -> list[str]:
+    """Тикеры файла без исключённых ('-TICKER' в любом из файлов)."""
+    include, own_exclude = _parse_file(path)
+    excluded = own_exclude | _excluded_tickers()
+    return [ticker for ticker in include if ticker not in excluded]
 
 
 def read_tickers() -> list[str]:

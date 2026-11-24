@@ -34,6 +34,17 @@ class TestReadTickers:
         assert mb._read_tickers() == ["SBER", "GAZP", "AFLT", "MOEX"]
 
 
+    def test_minus_prefix_excludes_ticker(self, monkeypatch, tmp_path):
+        f1 = tmp_path / "poll_tickers.txt"
+        f1.write_text("SBER\n-VTBR\nVTBR\nGAZP\n", encoding="utf-8")
+        f2 = tmp_path / "poll_tickers2.txt"
+        f2.write_text("VTBR\nAFLT\n", encoding="utf-8")
+        monkeypatch.setattr(mb, "POLL_FILE", f1)
+        monkeypatch.setattr(mb, "TIER2_FILE", f2)
+        monkeypatch.setattr(mb, "FUT_FILE", tmp_path / "нет_фьючерсов")
+        assert mb._read_tickers() == ["SBER", "GAZP", "AFLT"]
+
+
 class TestPickC10Ref:
     now = datetime(2026, 11, 13, 12, 30)
 
