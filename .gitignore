@@ -3,3 +3,4 @@ venv/
 __pycache__/
 telegram.local.json
 ssl/
+scripts/analysis/
