@@ -24,7 +24,7 @@ function badge(cat) {
 }
 
 async function loadPositions() {
-  const d = await (await fetch("/positions")).json();
+  const d = await (await fetch("/miniapp/positions")).json();
   const s = d.stats || {};
   el("portfolio-summary").innerHTML =
     `Позиций: ${s.total ?? 0} · безубыток: ${s.breakeven ?? 0} · защищённая прибыль: ${s.protected ?? 0} · ` +
@@ -49,7 +49,7 @@ async function loadPositions() {
 }
 
 async function loadMarket() {
-  const d = await (await fetch("/market")).json();
+  const d = await (await fetch("/miniapp/market")).json();
   const candidates = d.candidates || [];
   const m = d.market || {};
   el("market-summary").innerHTML =
