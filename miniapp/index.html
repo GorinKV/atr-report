@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1626">
+  <title>Finam 950034 — Мини-приложение</title>
+  <link rel="stylesheet" href="/app/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="title">📊 Мини-приложение · счёт 950034</div>
+    <div class="sub">Finam · realTrade</div>
+  </header>
+  <nav class="tabs">
+    <button data-tab="portfolio" class="active">Портфель</button>
+    <button data-tab="market">Рынок</button>
+  </nav>
+
+  <section id="tab-portfolio" class="tab">
+    <div id="portfolio-summary" class="summary">Загрузка…</div>
+    <div id="portfolio-table-wrap">
+      <table id="portfolio-table">
+        <thead>
+          <tr><th>Актив</th><th>Кол-во</th><th>Средняя</th><th>Последняя</th><th>PnL ₽</th><th>SL</th><th>Статус</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-market" class="tab" hidden>
+    <div id="market-summary" class="summary">Загрузка…</div>
+    <div id="market-table-wrap">
+      <table id="market-table">
+        <thead>
+          <tr><th>#</th><th>Тикер</th><th>Сетап</th><th>Цена</th><th>Δдень</th><th>RVOL</th><th>ATR%</th><th>Вход</th><th>Стоп</th><th>Цель</th><th>R:R</th><th>Лоты</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <script src="/app/app.js"></script>
+</body>
+</html>
